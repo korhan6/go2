@@ -14,7 +14,7 @@ hasta 25 cm (los pies quedan a 42 cm) y, si se paso, retrocede un poco (MEDIR). 
 por que no confirma sale en 'go2 escaleras'.
 
 Entradas: /utlidar/cloud_deskewed, /utlidar/robot_odom
-Salidas:  /go2/escaleras (JSON: escaleras confirmadas, marco odom)
+Salidas:  /go2/escaleras (JSON: escaleras confirmadas y posibles bajadas, marco odom)
           /go2/escalera_estado (JSON: estado de la maniobra)
           cmd_vel_prioridad (solo durante la maniobra; el driver le da prioridad sobre Nav2)
           /go2/marcha (String: escaleras_on | escaleras_off | balancear) -> go2_driver
@@ -234,12 +234,17 @@ class Escaleras(Node):
         ahora = time.monotonic()
         vistas = []
         if self.pose is not None:
-            for tipo in ("subir", "bajar"):
+            for tipo in ("subir", "bajar", "posible"):
                 c = self.detector.confirmada(tipo, ahora, self.pose[:2])
-                if c is not None and 0.3 < c.get("dist", 0.0) < 2.5:
-                    vistas.append({"tipo": tipo, "x": float(c["E"][0]), "y": float(c["E"][1]),
-                                   "yaw": float(c["yaw_n"]), "ancho": float(c["ancho"]),
-                                   "abierta": bool(c["abierta"]), "dist": float(c["dist"]), "z": float(c["z"])})
+                if c is None or not 0.3 < c.get("dist", 0.0) < 2.5:
+                    continue
+                if tipo == "posible" and any(v["tipo"] == "bajar" for v in vistas):
+                    continue                    # ya se ve la escalera de verdad
+                # 'posible': caida sin el primer escalon a la vista (de lejos una bajada se ve asi)
+                vistas.append({"tipo": "bajar" if tipo == "posible" else tipo, "posible": tipo == "posible",
+                               "x": float(c["E"][0]), "y": float(c["E"][1]),
+                               "yaw": float(c["yaw_n"]), "ancho": float(c["ancho"]),
+                               "abierta": bool(c["abierta"]), "dist": float(c["dist"]), "z": float(c["z"])})
         self.pub_esc.publish(String(data=json.dumps(vistas)))
         m = self.maniobra
         est = {"estado": "ACERCANDOME" if self.espera is not None else m.estado, "info": m.info,

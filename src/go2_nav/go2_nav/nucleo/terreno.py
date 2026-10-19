@@ -319,7 +319,9 @@ def analizar_bajada(fx, fy, h):
     """Busca una escalera (o escalon) hacia abajo delante del perro.
 
     Devuelve (deteccion | None, estado_centro, motivo).
-      deteccion: dict(bx, by, dist, ang, centro, ancho, prof, abierta)
+      deteccion: dict(bx, by, dist, ang, centro, ancho, prof, abierta, huella)
+        huella True  = se ve el primer escalon: ES una escalera de bajada
+               False = caida empinada de borde recto sin huella vista: POSIBLE bajada (o balcon)
         bx, by punto central del borde (m, coordenadas del perro)
         dist   distancia perpendicular del centro del perro al borde (m)
         ang    angulo de la normal del borde respecto al frente del perro (rad, + = izquierda)
@@ -369,11 +371,10 @@ def analizar_bajada(fx, fy, h):
             niveles.append(n)
     if len(prof) < 2 or empinados < max(2, len(ks) // 2):
         return None, estado_centro, "baja suave: rampa o desnivel chico, no escalera"
-    if len(niveles) < max(3, (len(ks) * 2) // 3) or float(np.std(niveles)) > 0.04:
-        # precipicio o dudoso: NO es escalera, nunca bajar
-        return None, "caida", ("caida a %.2f m pero NO veo el primer escalon (huella en %d de %d carriles): "
-                               "balcon/desnivel, o el escalon queda en la sombra del lidar (acercarse)"
-                               % (float(a) - LARGO2, len(niveles), len(ks)))
+    # SEGURIDAD: sin la huella del primer escalon NO es escalera (precipicio o dudoso). Igual se
+    # devuelve la geometria (huella=False): es una POSIBLE bajada, que el gestor va a mirar de
+    # cerca; la maniobra solo arranca con huella=True.
+    huella = len(niveles) >= max(3, (len(ks) * 2) // 3) and float(np.std(niveles)) <= 0.04
     norma = math.sqrt(1.0 + b * b)
     c = float(0.5 * (lat[0] + lat[-1]))
     det = {
@@ -385,7 +386,12 @@ def analizar_bajada(fx, fy, h):
         "ancho": float(lat[-1] - lat[0] + CARRIL),
         "abierta": bool(k0 == 0 or k1 == len(rj.centros) - 1),
         "prof": float(np.median(prof)),
+        "huella": bool(huella),
     }
+    if not huella:
+        return det, "caida", ("caida a %.2f m pero NO veo el primer escalon (huella en %d de %d carriles): "
+                              "balcon/desnivel, o el escalon queda en la sombra del lidar (acercarse)"
+                              % (float(a) - LARGO2, len(niveles), len(ks)))
     return det, estado_centro, "escalera de bajada a %.2f m (ancho %.2f m)" % (det["dist"], det["ancho"])
 
 

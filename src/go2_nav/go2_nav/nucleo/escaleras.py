@@ -19,7 +19,10 @@ from . import terreno
 from .control import ang
 
 CONFIRMAR_N, CONFIRMAR_T = 3, 4.0        # detecciones seguidas (en 4 s) para confirmar
-TOL_POS, TOL_ANG = 0.15, math.radians(10)
+# tolerancias entre vistas: una POSIBLE bajada se ve de lejos y su borde "camina" a lo largo
+# mientras el perro se mueve (se ve otro pedazo), asi que su tolerancia es mas ancha
+TOL = {"bajar": (0.15, math.radians(10)), "subir": (0.15, math.radians(10)),
+       "posible": (0.40, math.radians(20))}
 NIVEL = math.radians(5)                  # pitch con el que el perro esta "a nivel"
 D_GIRO, D_MIN, D_MAX = 0.65, 0.50, 1.20  # bajada: distancia del centro al borde para girar 180
 D_SUBIR = 0.45                           # subida: centro del perro a 45 cm del primer escalon
@@ -40,19 +43,22 @@ def _lim(v, m):
 class Detector(object):
     """Confirma escaleras con varias nubes seguidas (en odom).
 
+    Tipos: 'subir', 'bajar' (se VE el primer escalon) y 'posible' (caida empinada de borde
+    recto, sin huella vista: de lejos una bajada se ve asi; tambien un balcon). Una 'posible'
+    nunca arranca la maniobra: el gestor manda al perro a mirarla de cerca.
     Mira delante y detras en cada nube; con alrededor=True ademas en 6 direcciones mas (para
     descubrir escaleras de costado mientras explora). Guarda en 'motivo' por que lo que hay
     delante NO es (todavia) una escalera de bajada: es lo que muestra 'go2 escaleras'.
     """
 
     def __init__(self):
-        self.hist = {"bajar": [], "subir": []}
+        self.hist = {"bajar": [], "subir": [], "posible": []}
         self.atras = (None, "nada", 0.0)     # (deteccion, estado_centro, t) mirando hacia atras
         self.motivo = ""                      # lo que hay delante, en palabras
         self.centro = "nada"                  # 'caida' | 'suelo' | 'pared' | 'nada' delante
 
     def limpiar(self):
-        self.hist = {"bajar": [], "subir": []}
+        self.hist = {k: [] for k in self.hist}
 
     def actualizar(self, xyz, pose, suelo, ahora, alrededor=False):
         """pose = (x, y, z, yaw)."""
@@ -67,12 +73,15 @@ class Detector(object):
             yd = ang(yaw + d)
             fx, fy = terreno.a_cuerpo(xyz, x, y, yd)
             det, centro, motivo = terreno.analizar_bajada(fx, fy, h)
+            escalera = det is not None and det["huella"]
             if d == 0.0:
                 self.motivo, self.centro = motivo, centro
             elif d == math.pi:
-                self.atras = (det, centro, ahora)
-            if det is not None and det["dist"] < 2.0:
+                self.atras = (det if escalera else None, centro, ahora)
+            if escalera and det["dist"] < 2.0:
                 self._sumar("bajar", det, x, y, yd, suelo, ahora)
+            elif det is not None and det["dist"] < 2.2:
+                self._sumar("posible", det, x, y, yd, suelo, ahora)
             sub = terreno.analizar_subida(fx, fy, h)
             if sub is not None:
                 self._sumar("subir", sub, x, y, yd, suelo, ahora)
@@ -96,8 +105,9 @@ class Detector(object):
         ex = float(np.median([d["ex"] for d in rec]))
         ey = float(np.median([d["ey"] for d in rec]))
         ref = media_ang([d["yaw_n"] for d in rec])
-        ok = [d for d in rec if math.hypot(d["ex"] - ex, d["ey"] - ey) < TOL_POS
-              and abs(ang(d["yaw_n"] - ref)) < TOL_ANG]
+        tol_pos, tol_ang = TOL[tipo]
+        ok = [d for d in rec if math.hypot(d["ex"] - ex, d["ey"] - ey) < tol_pos
+              and abs(ang(d["yaw_n"] - ref)) < tol_ang]
         if len(ok) < CONFIRMAR_N or ok[-1]["t"] - ok[0]["t"] < 0.25:
             return None
         c = {"tipo": tipo,

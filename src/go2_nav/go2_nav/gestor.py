@@ -10,6 +10,11 @@ Escaleras (go2_escaleras las detecta y las cruza):
   - SUBIDA: el lidar la ve y la CAMARA (YOLO) la confirma (de frente, la camara ve bien los
     escalones). BAJADA: la confirma el lidar viendo el primer escalon; la camara, a 30 cm del
     suelo y mirando desde arriba, NO ve una bajada, asi que no puede vetarla (escaleras_vision);
+  - POSIBLE BAJADA: de lejos el primer escalon queda en la sombra del lidar y una bajada se ve
+    como "una caida". La exploracion nunca se acerca sola a una caida (es obstaculo en el
+    costmap), asi que la caida queda como portal 'por confirmar' y, como cualquier escalera
+    pendiente, el perro va a mirarla de cerca. Si de cerca ve el escalon, baja (en reversa);
+    si no, era un balcon y no vuelve (2 intentos);
   - con escaleras sin usar el mapeo NO esta completo: al terminar el piso va a la escalera,
     sube DE FRENTE o baja EN REVERSA (gira 180 antes del borde), mapea el otro piso y vuelve;
   - un mapa de slam_toolbox POR PISO: antes de cruzar guarda el del piso; en un piso nuevo
@@ -615,8 +620,14 @@ class Gestor(Node):
                 if v["ancho"] < 0.45 and not v.get("abierta"):
                     continue
                 x, y, yaw = self.odom_a_mapa(T, v["x"], v["y"], v["yaw"])
-                if self._portal_cerca(v["tipo"], x, y) is not None:
-                    self.agregar_portal(v["tipo"], x, y, yaw, v["ancho"])     # ya confirmada: solo afina
+                posible = bool(v.get("posible"))
+                p = self._portal_cerca(v["tipo"], x, y)
+                if p is not None:
+                    if not posible and p.get("por_confirmar"):
+                        p["por_confirmar"], p["fallos"] = False, 0
+                        self.log("portal %d: ahora SI veo el primer escalon (bajada confirmada)" % p["id"])
+                    if not posible or p.get("por_confirmar"):
+                        self.agregar_portal(v["tipo"], x, y, yaw, v["ancho"])  # ya registrada: solo afina
                     continue
                 if any(d[0] == self.piso and math.hypot(d[1] - x, d[2] - y) < 1.0 for d in self.descartadas):
                     continue
@@ -624,20 +635,29 @@ class Gestor(Node):
                           and math.hypot(c["x"] - x, c["y"] - y) < 1.2), None)
                 if c is None:
                     c = {"piso": self.piso, "tipo": v["tipo"], "x": x, "y": y, "si": 0, "no": 0.0,
-                         "n": 0, "t": ahora, "t0": ahora}
+                         "n": 0, "t": ahora, "t0": ahora, "posible": posible}
                     self.candidatos.append(c)
-                    self.log("el lidar ve una escalera de %s a %.1f m: la confirmo %s"
-                             % (v["tipo"], v.get("dist", 0.0),
-                                "con la camara" if self.camara_decide(v["tipo"]) else "con mas nubes del lidar"))
+                    self.log("el lidar ve %s a %.1f m: la confirmo %s"
+                             % ("una POSIBLE bajada (caida, sin ver el escalon)" if posible
+                                else "una escalera de %s" % v["tipo"], v.get("dist", 0.0),
+                                "con la camara" if self.camara_decide(v["tipo"]) and not posible
+                                else "con mas nubes del lidar"))
+                c["posible"] = c["posible"] and posible       # una vista con escalon la hace real
                 dt = min(1.0, ahora - c["t"])
                 c["t"] = ahora
                 c["n"] += 1
-                if not self.camara_decide(v["tipo"]):
+                # una posible bajada no la confirma la camara: solo se va a mirar de cerca, y la
+                # maniobra no arranca sin ver el escalon
+                if c["posible"] or not self.camara_decide(v["tipo"]):
                     if c["n"] >= LIDAR_SOLO_N and ahora - c["t0"] >= LIDAR_SOLO_T:
                         self.candidatos.remove(c)
-                        self.log("escalera de %s confirmada por el lidar (%d vistas; vio el primer escalon)"
-                                 % (v["tipo"], c["n"]))
-                        self.agregar_portal(v["tipo"], x, y, yaw, v["ancho"])
+                        if c["posible"]:
+                            self.log("POSIBLE bajada registrada: voy a mirarla de cerca %s"
+                                     % ("ya" if self.politica == "inmediato" else "al terminar el piso"))
+                        else:
+                            self.log("escalera de %s confirmada por el lidar (%d vistas; vio el primer escalon)"
+                                     % (v["tipo"], c["n"]))
+                        self.agregar_portal(v["tipo"], x, y, yaw, v["ancho"], por_confirmar=c["posible"])
                     continue
                 j = self.juicio_camara(v)
                 if j == "si":
@@ -665,7 +685,7 @@ class Gestor(Node):
                 return p
         return None
 
-    def agregar_portal(self, tipo, x, y, yaw, ancho, retorno=False, destino=None):
+    def agregar_portal(self, tipo, x, y, yaw, ancho, retorno=False, destino=None, por_confirmar=False):
         p = self._portal_cerca(tipo, x, y)
         if p is not None:
             if not p["usado"]:
@@ -674,10 +694,13 @@ class Gestor(Node):
                 p["yaw"] = ang(p["yaw"] + 0.3 * ang(yaw - p["yaw"]))
             return p
         p = {"id": len(self.portales), "piso": self.piso, "tipo": tipo, "x": x, "y": y, "yaw": yaw,
-             "ancho": ancho, "usado": False, "destino": destino, "retorno": retorno, "fallos": 0}
+             "ancho": ancho, "usado": False, "destino": destino, "retorno": retorno, "fallos": 0,
+             "por_confirmar": por_confirmar}
         self.portales.append(p)
         if not retorno:
-            self.log("escalera de %s vista en el piso %d (portal %d)" % (tipo, self.piso, p["id"]))
+            self.log("%s en el piso %d (portal %d)" % (
+                "POSIBLE bajada (por confirmar de cerca)" if por_confirmar else "escalera de %s vista" % tipo,
+                self.piso, p["id"]))
         return p
 
     # ------------------------------------------------------------------ escaleras: cruce
@@ -724,7 +747,8 @@ class Gestor(Node):
 
     def iniciar_cruce(self, p):
         ax, ay = self.destino_portal(p)
-        self.log("voy a la escalera de %s (portal %d)" % (p["tipo"], p["id"]))
+        self.log("voy a %s (portal %d)" % ("mirar de cerca la posible bajada" if p.get("por_confirmar")
+                                          else "la escalera de %s" % p["tipo"], p["id"]))
         self.cruce = {"portal": p, "fase": "acercando", "t": time.monotonic(), "piso0": self.piso}
         self.motivo = "voy a la escalera de %s" % p["tipo"]
         pose = self.pose()
@@ -739,10 +763,16 @@ class Gestor(Node):
         if not self.ir_a(ax, ay, yaw, "escalera"):
             self.cruce = None
 
-    def _fallo_cruce(self, motivo):
+    def _fallo_cruce(self, motivo, sin_empezar=False):
         p = self.cruce["portal"]
-        p["fallos"] += 1
-        self.log("escalera no tomada (%s), intento %d de 3" % (motivo, p["fallos"]))
+        if p.get("por_confirmar") and sin_empezar:
+            # de cerca tampoco vio el primer escalon: casi seguro un balcon/desnivel (2 intentos)
+            p["fallos"] += 2
+            self.log("posible bajada (portal %d): de cerca NO veo el escalon (%s)%s" % (
+                p["id"], motivo, ": era un balcon/desnivel, no vuelvo" if p["fallos"] >= 3 else ", lo intento otra vez"))
+        else:
+            p["fallos"] += 1
+            self.log("escalera no tomada (%s), intento %d de 3" % (motivo, p["fallos"]))
         self.cruce = None
         self.meta = None
         self._pausar_slam(False)
@@ -783,8 +813,9 @@ class Gestor(Node):
             if time.monotonic() - c["t"] < 1.0 or not res or E.get("activa"):
                 return
             if not res.get("ok"):
-                self._fallo_cruce(res.get("motivo", "?"))
+                self._fallo_cruce(res.get("motivo", "?"), sin_empezar=bool(res.get("sin_empezar")))
                 return
+            p["por_confirmar"] = False
             self._llegue_otro_piso(res)
             c.update(fase="asentando", t=time.monotonic(), res=res)
             return
@@ -1111,11 +1142,17 @@ class Gestor(Node):
             self.politica = a[0]
             return True, "escaleras: %s" % self.politica, {}
         E = self.info.get("escalera") or {}
-        lista = ["portal %d: %s en piso %d%s%s" % (p["id"], p["tipo"], p["piso"],
-                 " -> piso %s" % p["destino"] if p["destino"] is not None else " (sin usar)",
+        def estado_portal(p):
+            if p["destino"] is not None:
+                return " -> piso %s" % p["destino"]
+            if p.get("por_confirmar"):
+                return " (POSIBLE: falta verla de cerca)" if p["fallos"] < 3 else " (balcon/desnivel: no era escalera)"
+            return " (sin usar)"
+        lista = ["portal %d: %s en piso %d%s%s" % (p["id"], p["tipo"], p["piso"], estado_portal(p),
                  " [fallos %d]" % p["fallos"] if p["fallos"] else "") for p in self.portales]
-        cand = ["candidata: %s en piso %d (lidar %d vistas, camara si=%d no=%.0fs)"
-                % (c["tipo"], c["piso"], c["n"], c["si"], c["no"]) for c in self.candidatos]
+        cand = ["candidata: %s%s en piso %d (lidar %d vistas, camara si=%d no=%.0fs)"
+                % ("posible " if c.get("posible") else "", c["tipo"], c["piso"], c["n"], c["si"], c["no"])
+                for c in self.candidatos]
         txt = ("politica: %s | camara confirma: %s | vision %s\n" % (
             self.politica, self.esc_vision, "OK" if self.vision_viva() else "NO llega"))
         txt += "delante del perro (lidar): %s\n" % (E.get("diagnostico") or "?")

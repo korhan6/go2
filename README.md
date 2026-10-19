@@ -147,6 +147,12 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
   defecto) termina el piso, va a la escalera y la toma; mapea el otro piso y vuelve.
 - **Subida: SIEMPRE de frente.** Se alinea, se centra, se acerca a 45 cm del primer escalón, pone
   la marcha de escaleras y sube.
+- **Bajada automática, aunque la vea de lejos.** De lejos el primer escalón queda en la sombra
+  del lidar y una bajada se ve solo como "una caída". La exploración nunca se acerca sola a una
+  caída (es obstáculo en el costmap), así que la caída queda como **posible bajada** (portal
+  "por confirmar") y, como cualquier escalera pendiente, el perro **va a mirarla de cerca**:
+  al terminar el piso con `al_final`, o enseguida con `inmediato`. Si de cerca ve el escalón,
+  baja. Si no, era un balcón: lo intenta 2 veces y no vuelve.
 - **Bajada: SIEMPRE en reversa.**
   1. se acerca al borde despacio hasta que el lidar **ve el primer escalón** (con el hocico a
      25–55 cm del borde; ver abajo por qué);
@@ -195,11 +201,13 @@ go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'f
 2. **En el log sale `DESCARTO la escalera de bajar ... la camara`** → versión anterior o
    `go2 escaleras vision requerida`: la cámara nunca ve una bajada desde arriba. Pon
    `go2 escaleras vision subida` (ahora es el valor por defecto).
-3. **La escalera está en la lista pero `(sin usar)` y el perro sigue explorando** → política
+3. **La escalera está en la lista como `(POSIBLE: falta verla de cerca)` o `(sin usar)` y el
+   perro sigue explorando** → política
    `al_final`: va al terminar el piso. Si el piso no "termina" (fantasmas, zonas que fallan),
    `go2 escaleras inmediato` o `go2 bajar` con el perro mirándola.
-4. **`escalera no tomada (no confirme la escalera de bajar: ...)`** → llegó al pie pero al
-   acercarse no vio la huella (ver 1). Tiene 3 intentos; después la ignora.
+4. **`escalera no tomada (no confirme la escalera de bajar: ...)`** o **`posible bajada ... de
+   cerca NO veo el escalon`** → llegó al borde pero al acercarse no vio la huella (ver 1).
+   Una posible bajada tiene 2 intentos y después queda como `(balcon/desnivel)`.
 5. **`el perro no avanza en la escalera`** → la marcha FreeWalk no se puso o el perro no camina
    a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2`.
 6. **`no hay espacio para girar junto a la escalera`** → necesita 38 cm libres alrededor para
@@ -230,7 +238,8 @@ limpiador consumen ~1–2 núcleos. Si la CPU va justa:
 
 ## Pruebas sin el perro y sin ROS
 ```
-python3 pruebas/prueba_nucleo.py           # deteccion de bajadas por distancia, balcon, subir y bajar en el simulador, fronteras
+python3 pruebas/prueba_nucleo.py           # deteccion de bajadas por distancia, balcon, posible bajada -> verla de cerca,
+                                           # subir y bajar en el simulador, fronteras
 python3 pruebas/prueba_nucleo.py bajar     # la bajada en reversa paso a paso
 ```
 Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanzan todo con ROS 2.
