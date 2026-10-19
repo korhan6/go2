@@ -1,0 +1,45 @@
+<!--
+  Ruta COMPROMETIDA (basado en nav2 navigate_w_recovery_and_replanning_only_if_path_becomes_invalid.xml)
+  - Calcula la ruta UNA vez y la sigue hasta el final.
+  - Solo vuelve a planificar si la ruta actual queda bloqueada (IsPathValid) o si cambia la meta.
+    Nada de "primero esta puerta, despues la otra, despues esta otra vez".
+  - Recuperaciones pensadas para el Go2 (el L1 NO ve atras): limpiar SOLO el costmap local,
+    esperar y retroceder poquito y despacio. Nada de girar a ciegas ni borrar el costmap global
+    (que recuerda lo que el lidar ya no ve). Si no sale, el gestor decide (otra meta / escape).
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="NavegarComprometido">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0" name="RevisarRuta">
+          <RecoveryNode number_of_retries="1" name="RecoveryComputePathToPose">
+            <Fallback name="SoloSiHaceFalta">
+              <ReactiveSequence name="RutaActualSirve">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            </Fallback>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="FallbackRecoveries">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Wait name="WaitRecovery" wait_duration="1.5"/>
+          <BackUp name="BackUpRecovery" backup_dist="0.12" backup_speed="0.08"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -1,0 +1,7 @@
+# Orden para el gestor de go2_nav (ver "go2 ayuda")
+string orden
+string[] args
+---
+bool ok
+string mensaje
+string json

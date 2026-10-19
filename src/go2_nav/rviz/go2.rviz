@@ -1,0 +1,145 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 1
+      Plane Cell Count: 30
+      Color: 160; 160; 164
+    - Class: rviz_default_plugins/Map
+      Name: Mapa (SLAM, crudo - apagado)
+      Enabled: false
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Color Scheme: map
+      Alpha: 0.9
+    - Class: rviz_default_plugins/Map
+      Name: Mapa explorado (gris = sin ver, morado = obstaculo)
+      Enabled: true
+      Topic:
+        Value: /go2/mapa_explorado
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Color Scheme: costmap
+      Alpha: 0.45
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Fronteras (verde) y meta (amarillo)
+      Enabled: true
+      Topic:
+        Value: /go2/fronteras
+    - Class: rviz_default_plugins/Map
+      Name: Costos globales
+      Enabled: true
+      Topic:
+        Value: /global_costmap/costmap
+      Color Scheme: costmap
+      Alpha: 0.3
+    - Class: rviz_default_plugins/Map
+      Name: Costos locales
+      Enabled: true
+      Topic:
+        Value: /local_costmap/costmap
+      Color Scheme: costmap
+      Alpha: 0.5
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Obstaculos (limpios)
+      Enabled: true
+      Topic:
+        Value: /go2/obstaculos
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 255; 255; 255
+    - Class: rviz_default_plugins/PointCloud2
+      Name: FANTASMAS ya eliminados (rojo, NO cuentan)
+      Enabled: true
+      Topic:
+        Value: /go2/fantasmas
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 255; 0; 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Suelo visto
+      Enabled: false
+      Topic:
+        Value: /go2/suelo
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: FlatColor
+      Color: 0; 200; 0
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan (para SLAM)
+      Enabled: false
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (m): 0.03
+      Color Transformer: FlatColor
+      Color: 0; 170; 255
+    - Class: rviz_default_plugins/Path
+      Name: Ruta
+      Enabled: true
+      Topic:
+        Value: /plan
+      Color: 0; 255; 0
+      Line Style: Lines
+    - Class: rviz_default_plugins/Polygon
+      Name: Huella del perro
+      Enabled: true
+      Topic:
+        Value: /local_costmap/published_footprint
+      Color: 255; 200; 0
+    - Class: rviz_default_plugins/Polygon
+      Name: Zona frente (frena)
+      Enabled: true
+      Topic:
+        Value: /zona_frente
+      Color: 255; 120; 0
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Lo que ve la camara (etiquetas)
+      Enabled: true
+      Topic:
+        Value: /go2/vision/marcas
+    - Class: rviz_default_plugins/Image
+      Name: Camara (YOLO)
+      Enabled: true
+      Topic:
+        Value: /go2/vision/imagen
+        Reliability Policy: Best Effort
+      Normalize Range: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 30; 30; 34
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Arriba
+      Scale: 60
+      X: 0
+      Y: 0
+Window Geometry:
+  Width: 1400
+  Height: 900

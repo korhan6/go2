@@ -1,0 +1,338 @@
+# Nav2 para el Unitree Go2 (ROS 2 Jazzy/Humble). Base: nav2_bringup/params/nav2_params.yaml (Jazzy)
+#
+# Cuerpo del Go2: 0.70 x 0.31 m. Huella:
+#   - a los LADOS: el cuerpo exacto (+-0.16 m)
+#   - ATRAS: el cuerpo exacto (-0.37 m)
+#   - ADELANTE: +9 cm de margen (0.45 m; el hocico esta a 0.36 m)
+# El perro camina de lado y gira en el sitio: controlador MPPI con modelo "Omni" (vx, vy, wz).
+# Asi, si no cabe girando, se desliza de lado o retrocede en vez de quedarse "sin espacio".
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    action_server_result_timeout: 900.0
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    # default_nav_to_pose_bt_xml lo pone el launch: go2_nav/config/ruta_comprometida.xml
+    error_code_names:
+      - compute_path_error_code
+      - follow_path_error_code
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    costmap_update_timeout: 0.30
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001      # el Go2 SI camina de lado
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.5
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+    progress_checker:
+      # cuenta tambien el giro en el sitio como progreso
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.20
+      required_movement_angle: 0.4
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.35          # de frente no puede corregir de lado: no rondar la meta
+      yaw_goal_tolerance: 0.6
+    FollowPath:
+      # Rotation Shim: si la ruta arranca en otra direccion, primero GIRA en el sitio (rapido) y
+      # despues sigue con MPPI. Tambien gira rapido al rumbo final. Ideal para un perro.
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_mppi_controller::MPPIController"
+      angular_dist_threshold: 0.6         # si la ruta va a mas de ~35 grados, primero gira de frente a ella
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.9
+      max_angular_accel: 2.5
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: true
+      time_steps: 56
+      model_dt: 0.05
+      batch_size: 1500
+      ax_max: 2.0
+      ax_min: -2.0
+      ay_max: 2.0
+      ay_min: -2.0
+      az_max: 3.0
+      vx_std: 0.2
+      vy_std: 0.2
+      wz_std: 0.4
+      vx_max: 0.6
+      vx_min: -0.3
+      vy_max: 0.35
+      wz_max: 1.0
+      iteration_count: 1
+      prune_distance: 1.7
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      # "DiffDrive": avanza con la CABEZA por delante siguiendo la ruta (gira y camina, sin
+      # cangrejear). Con "Omni" mezclaba pasos de lado y se veia raro.
+      motion_model: "DiffDrive"
+      visualize: false
+      regenerate_noises: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics: [
+        "ConstraintCritic", "CostCritic", "GoalCritic",
+        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+        "PathAngleCritic", "PreferForwardCritic", "TwirlingCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        # de frente siempre que pueda (retrocede solo si no hay otra)
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        threshold_to_consider: 0.5
+      CostCritic:
+        # consider_footprint: chequea la HUELLA EXACTA del perro, no un circulo
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        # solo el contacto REAL (celda letal bajo la huella) es "casi choque". Con 253 el
+        # inflado del marco de una puerta castigaba cruzarla y el perro se quedaba quieto delante
+        near_collision_cost: 254
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.5
+        trajectory_point_step: 2
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        # la cabeza apunta a donde va la ruta
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+      TwirlingCritic:
+        enabled: true
+        twirling_cost_power: 1
+        twirling_cost_weight: 10.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 10.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
+      footprint_padding: 0.0
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        combination_method: 1
+        observation_sources: obstaculos
+        obstaculos:
+          topic: /go2/obstaculos
+          data_type: "PointCloud2"
+          sensor_frame: base_link
+          marking: True
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
+          inf_is_valid: False
+      inflation_layer:
+        # inflado corto y que cae rapido: prefiere ir por el centro, pero CABE donde cabe el cuerpo
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.50
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 2.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
+      footprint_padding: 0.0
+      resolution: 0.05
+      # ventana de 40 x 40 m que sigue al perro: el mapa de SLAM crece mientras explora y las
+      # metas de exploracion quedan justo fuera de lo ya mapeado
+      rolling_window: true
+      width: 40
+      height: 40
+      # sin static_layer, lo no visto cuenta como libre (el planificador igual lo cruzaba con
+      # allow_unknown) y RViz no pinta un cuadro gris de 40 x 40 m
+      track_unknown_space: false
+      # SIN static_layer: los puntitos de ruido del mapa de SLAM se volvian "muros" y Nav2 no
+      # encontraba ruta (ni para volver al inicio). Lo que el perro VE (limpio, con memoria) se
+      # marca aqui y se borra solo cuando el lidar ve que ya no esta.
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: obstaculos
+        obstaculos:
+          topic: /go2/obstaculos
+          data_type: "PointCloud2"
+          sensor_frame: base_link
+          marking: True
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
+          obstacle_max_range: 3.0
+          raytrace_max_range: 3.5
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.50
+      always_send_full_costmap: True
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    planner_plugins: ["GridBased"]
+    costmap_update_timeout: 1.0
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.4
+      use_astar: true
+      allow_unknown: true
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.2
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.8
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    stamp_smoothed_velocity_with_smoothing_time: False
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.6, 0.35, 1.0]
+    min_velocity: [-0.3, -0.35, -1.0]
+    max_accel: [1.5, 1.5, 3.0]
+    max_decel: [-2.0, -2.0, -3.5]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 0.5
+
+collision_monitor:
+  ros__parameters:
+    # ultima barrera antes del perro: frena si la orden lo llevaria a chocar (huella exacta)
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.3
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    polygons: ["Huella", "Frente"]
+    Huella:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 0.8
+      simulation_time_step: 0.05
+      min_points: 4
+      visualize: False
+      enabled: True
+    Frente:
+      # zona delante del hocico: ahi va mas despacio (a los lados no: cuerpo exacto)
+      type: "polygon"
+      action_type: "slowdown"
+      points: "[[0.75, 0.17], [0.75, -0.17], [0.37, -0.17], [0.37, 0.17]]"
+      slowdown_ratio: 0.5
+      min_points: 4
+      visualize: True
+      polygon_pub_topic: "zona_frente"
+      enabled: True
+    observation_sources: ["obstaculos"]
+    obstaculos:
+      type: "pointcloud"
+      topic: "/go2/obstaculos"
+      min_height: -0.40
+      max_height: 0.40
+      enabled: True
