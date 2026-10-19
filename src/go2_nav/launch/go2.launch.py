@@ -30,8 +30,10 @@ def _vision_y_gestor(context):
     sim = LaunchConfiguration("sim").perform(context) == "true"
     vision = LaunchConfiguration("vision").perform(context) == "true"
     acciones = []
-    # en la simulacion no hay camara: las escaleras no se confirman con vision
-    esc_vision = LaunchConfiguration("escaleras_vision").perform(context) or ("off" if sim else "requerida")
+    # subida: la camara confirma (y puede vetar) SOLO las subidas; una bajada la confirma el lidar
+    # viendo el primer escalon (la camara, a 30 cm del suelo, no ve una bajada desde arriba).
+    # En la simulacion no hay camara: solo lidar.
+    esc_vision = LaunchConfiguration("escaleras_vision").perform(context) or ("off" if sim else "subida")
     acciones.append(Node(package="go2_nav", executable="gestor", name="go2_gestor", output="screen",
                          parameters=[{"escaleras": LaunchConfiguration("escaleras").perform(context),
                                       "escaleras_vision": esc_vision}]))
@@ -71,7 +73,7 @@ def generate_launch_description():
         DeclareLaunchArgument("escaleras", default_value="al_final"),
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
-        DeclareLaunchArgument("escaleras_vision", default_value=""),    # requerida | off
+        DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
 
         Node(package="go2_nav", executable="perro_sim", name="go2_perro_sim", output="screen",
              parameters=[{"mundo": mundo, "fantasmas": ParameterValue(fantasmas, value_type=bool),

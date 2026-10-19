@@ -36,8 +36,7 @@ from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from .nube import a_cuerpo, crear_nube, leer_xyz, voxel_unico, yaw_de_quat
-
-LARGO2, ANCHO2 = 0.36, 0.17      # medio largo / medio ancho del cuerpo del Go2 (0.70 x 0.31 m)
+from .nucleo.terreno import ANCHO2, LARGO2     # medio largo / medio ancho del cuerpo (0.70 x 0.31 m)
 
 
 # ---------------------------------------------------------------- mascara aprendida

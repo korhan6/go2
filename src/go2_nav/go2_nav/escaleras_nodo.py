@@ -1,4 +1,4 @@
-"""go2_escaleras: detecta escaleras y las cruza. Usa el nucleo probado de go2nav.
+"""go2_escaleras: detecta escaleras y las cruza (nucleo: nucleo/terreno.py y nucleo/escaleras.py).
 
   SUBIR  (de frente): alinear -> centrar -> acercar -> marcha de escaleras -> subir -> salir
   BAJAR  (SIEMPRE en reversa): alinear -> centrar -> distancia -> GIRAR 180 -> verificar que
@@ -6,7 +6,12 @@
 
 Antes de pisar la escalera, cualquier duda = cancela. Encima de los escalones nunca cambia de
 marcha: si algo falla se queda quieto (DETENIDO) y espera 'go2 seguir' o el control remoto.
-Un balcon o un desnivel sin escalones NUNCA se toma como escalera de bajada.
+Un balcon o un desnivel sin escalones NUNCA se toma como escalera de bajada: hace falta VER el
+primer escalon. El L1 (en la cabeza, a ~30 cm del suelo) lo tiene en su sombra hasta estar a
+menos de ~0.55 m del borde, y pegado al borde deja de ver el suelo de delante: la bajada se
+confirma con el hocico entre ~0.25 y ~0.55 m del borde. Por eso el perro se acerca despacio
+hasta 25 cm (los pies quedan a 42 cm) y, si se paso, retrocede un poco (MEDIR). Lo que ve y
+por que no confirma sale en 'go2 escaleras'.
 
 Entradas: /utlidar/cloud_deskewed, /utlidar/robot_odom
 Salidas:  /go2/escaleras (JSON: escaleras confirmadas, marco odom)
@@ -30,18 +35,14 @@ from std_msgs.msg import String
 
 from go2_nav_interfaces.srv import Comando
 
-from .nube import leer_xyz
+from .nube import leer_xyz, rpy_de_quat
 from .nucleo import config, terreno
 from .nucleo.control import Memoria, ang, guardian
-from .nucleo.escaleras import Detector, Maniobra
+from .nucleo.escaleras import EN_ESCALERA, Detector, Maniobra
 
-
-def rpy(q):
-    yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-    s = max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x)))
-    pitch = math.asin(s)
-    roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
-    return yaw, pitch, roll
+# acercamiento antes de confirmar: distancia minima del HOCICO al borde (bajada) o al primer
+# escalon (subida). De bajada hay que acercarse hasta que el lidar vea la huella (ver arriba).
+D_ACERCAR = {"bajar": 0.25, "subir": 0.30}
 
 
 class RobotMarcha(object):
@@ -62,7 +63,8 @@ class Escaleras(Node):
     def __init__(self):
         super().__init__("go2_escaleras")
         self.cfg = dict(config.DEFECTO)
-        for k in ("v_subir", "v_bajar", "ancho_min_escalera", "w_min", "radio_giro"):
+        for k in ("v_subir", "v_bajar", "ancho_min_escalera", "w_min", "radio_giro", "obst_min",
+                  "obst_max", "sesgo_cerca"):
             self.cfg[k] = self.declare_parameter(k, self.cfg[k]).value
         self.memoria = Memoria()
         self.detector = Detector()
@@ -98,7 +100,7 @@ class Escaleras(Node):
     # ------------------------------------------------------------------ entradas
     def cb_odom(self, m):
         p = m.pose.pose.position
-        yaw, pitch, roll = rpy(m.pose.pose.orientation)
+        yaw, pitch, roll = rpy_de_quat(m.pose.pose.orientation)
         self.pose = (p.x, p.y, p.z, yaw, pitch, roll)
 
     def cb_nube(self, m):
@@ -119,7 +121,7 @@ class Escaleras(Node):
         if not nuevas:
             self.memoria.sumar(np.zeros((0, 3), np.float32), x, y, ahora)
         local = self.memoria.puntos()
-        en_escalera = self.maniobra.estado in ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
+        en_escalera = self.maniobra.estado in EN_ESCALERA
         if en_escalera:
             self.suelo = z - terreno.ALTURA_BASE
         else:
@@ -159,7 +161,7 @@ class Escaleras(Node):
     # ------------------------------------------------------------------ acercamiento
     def acercarse(self, ahora):
         """Mirando la escalera: espera a confirmarla; si no, se acerca despacio (el primer
-        escalon de una bajada solo se ve de cerca), nunca a menos de 30 cm del borde."""
+        escalon de una bajada solo se ve de cerca), nunca a menos de D_ACERCAR del borde."""
         e = self.espera
         x, y, z, yaw, pitch, roll = self.pose
         err = ang(e["yaw"] - yaw)
@@ -177,19 +179,23 @@ class Escaleras(Node):
         e.setdefault("t_quieto", ahora)
         avance = math.hypot(x - e["p0"][0], y - e["p0"][1])
         h = self.holg
-        if h is not None and ahora - e["t_quieto"] < 8.0 and avance < 0.50:
+        d_min = D_ACERCAR[e["tipo"]]
+        if h is not None and ahora - e["t_quieto"] < 12.0 and avance < 0.80:
             # caida = SUPERFICIE por debajo del suelo (un escalon); los reflejos del piso brillante
             # no cuentan. hueco = el suelo se acaba sin nada visible (balcon): tampoco se acerca
             d_ob, d_ca, d_hu = h["adelante"]
-            if d_ca > 0.30 and d_hu > 0.30 and d_ob > 0.30:
-                self.mover(0.07, 0.0, max(-0.3, min(0.3, 1.2 * err)))
+            libre = min(d_ca, d_hu, d_ob)
+            if libre > d_min:
+                v = 0.07 if libre > d_min + 0.15 else 0.04
+                self.mover(v, 0.0, max(-0.3, min(0.3, 1.2 * err)))
                 return
         self.mover(0.0, 0.0, 0.0)
-        if ahora - e["t_quieto"] > 10.0:
+        if ahora - e["t_quieto"] > 14.0:
             self.espera = None
-            self.resultado = {"ok": False, "motivo": "no confirme la escalera de %s" % e["tipo"],
-                              "tipo": e["tipo"], "sin_empezar": True, "z": z, "pose_odom": [x, y, yaw]}
-            self.log("no confirme la escalera de %s" % e["tipo"])
+            motivo = "no confirme la escalera de %s: %s" % (e["tipo"], self.detector.motivo or "no la veo")
+            self.resultado = {"ok": False, "motivo": motivo, "tipo": e["tipo"], "sin_empezar": True,
+                              "z": z, "pose_odom": [x, y, yaw]}
+            self.log(motivo)
 
     # ------------------------------------------------------------------ ordenes
     def srv(self, req, res):
@@ -238,6 +244,8 @@ class Escaleras(Node):
         m = self.maniobra
         est = {"estado": "ACERCANDOME" if self.espera is not None else m.estado, "info": m.info,
                "activa": bool(m.activa or self.espera is not None),
+               # lo que el lidar ve delante y por que (no) es una bajada: 'go2 escaleras'
+               "delante": self.detector.centro, "diagnostico": self.detector.motivo,
                "en_escalera": bool(m.en_escalera(self.pose[4] if self.pose else 0.0)),
                "detenido": m.estado == "DETENIDO", "motivo_detenido": m.m.get("motivo_det", ""),
                "resultado": self.resultado, "log": self.logs[-1] if self.logs else "",

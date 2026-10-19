@@ -14,7 +14,8 @@ es de milisegundos.
 | SLAM | [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) | el mapa (`/map`) |
 | Navegación | [Nav2](https://github.com/ros-navigation/navigation2) | planificador A* + controlador **MPPI omnidireccional** (camina de lado y retrocede) con la **huella exacta** del perro |
 | Ruta comprometida | árbol de comportamiento oficial de Nav2 *"replanning only if path becomes invalid"* | calcula la ruta y la sigue hasta el final; solo replanifica si queda bloqueada |
-| `go2_gestor` | propio | exploración por fronteras **con compromiso**, puntos guardados, estado en vivo |
+| `go2_gestor` | propio | exploración por fronteras **con compromiso** (`nucleo/exploracion.py`), escaleras y pisos, puntos guardados, estado en vivo |
+| `go2_escaleras` | propio (`nucleo/terreno.py`, `nucleo/escaleras.py`) | confirma escaleras (subida: lidar + cámara; bajada: lidar viendo el primer escalón) y las cruza: **sube de frente, baja en reversa** |
 | `go2_vision` | [YOLOv8](https://github.com/ultralytics/ultralytics) entrenado con Open Images V7 (600 clases) | la **cámara del perro** por el cable, YOLO en la **GPU** de la laptop: ve escaleras, personas, sillas, puertas... y las ubica en el mapa con la distancia del lidar |
 
 ### La huella (obstacle avoidance)
@@ -128,15 +129,15 @@ morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 - **Dónde está cada cosa:** la dirección sale de la imagen y la distancia sale del lidar. En RViz
   salen etiquetas en el mapa ("escalera 82 %", "persona 70 %") y el panel **Camara (YOLO)** con los
   recuadros.
-- **Escaleras con dos testigos:** el lidar solo no basta. Una escalera del lidar pasa a ser un
-  portal **solo si la cámara la confirma** en esa dirección. Si la cámara mira hacia ahí y no ve
-  escalera, se descarta. Sin visión, no toma escaleras solo.
+- **Subidas con dos testigos:** una escalera de subida del lidar pasa a ser un portal **solo si
+  la cámara la confirma** en esa dirección. Las **bajadas** las confirma el lidar viendo el primer
+  escalón (desde arriba la cámara no ve una bajada). Ver "Escaleras y varios pisos".
 
 ```
 go2 camara                 # en vivo: fuente, fps, objetos y escalera
 go2 vision_probar          # GPU y velocidad del modelo (sin ROS)
 go2 vision_probar camara   # + una foto de la camara con detecciones -> ~/.go2_nav/vision_prueba.jpg
-go2 escaleras vision off   # volver a confiar solo en el lidar (no recomendado)
+go2 escaleras vision off   # confiar solo en el lidar (tambien para las subidas)
 go2 lanzar camara:=videohub   # forzar la otra fuente de video
 ```
 
@@ -144,14 +145,18 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
 
 - **Mientras queden escaleras sin usar, el mapeo NO está completo.** Con `al_final` (por
   defecto) termina el piso, va a la escalera y la toma; mapea el otro piso y vuelve.
-- **Subida:** se alinea, se centra y **sube de frente**.
-- **Bajada:**
-  1. se acerca al borde despacio (nunca a menos de 30 cm);
-  2. confirma que ve escalones;
-  3. **gira 180°**, verifica que detrás hay escalones y **baja SIEMPRE en reversa**;
-  4. abajo, se vuelve a poner de frente.
+- **Subida: SIEMPRE de frente.** Se alinea, se centra, se acerca a 45 cm del primer escalón, pone
+  la marcha de escaleras y sube.
+- **Bajada: SIEMPRE en reversa.**
+  1. se acerca al borde despacio hasta que el lidar **ve el primer escalón** (con el hocico a
+     25–55 cm del borde; ver abajo por qué);
+  2. se alinea y se centra, y se pone a 65 cm del borde;
+  3. **gira 180°**, comprueba por odometría que el borde quedó detrás (y que detrás no hay suelo
+     firme ni una pared, si el lidar llega a ver), pone la marcha y **baja de espaldas**;
+  4. abajo, sale 30 cm, quita la marcha y se vuelve a poner de frente.
 - **Seguridad:**
-  - un balcón o un desnivel sin escalones **nunca** se toma como escalera;
+  - un balcón o un desnivel sin escalones **nunca** se toma como escalera: hace falta ver la
+    huella del primer escalón (plana, a 9–30 cm bajo el borde, en varios carriles);
   - antes de pisar los escalones, cualquier duda = cancela;
   - ya encima de los escalones nunca cambia de marcha: si algo falla queda **DETENIDO** y
     espera `go2 seguir` o el control remoto.
@@ -160,16 +165,75 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
   otro piso.
 - **La marcha de escaleras** es FreeWalk (firmware ≥ 1.1.7, el tuyo es 1.5.1).
 
+### Quién confirma cada escalera (`go2 escaleras vision ...`)
+| Tipo | Quién la confirma | Por qué |
+|---|---|---|
+| Subida | lidar **y cámara (YOLO "Stairs")** | de frente la cámara ve los escalones muy bien; evita tomar un mueble bajo por escalera |
+| Bajada | **solo el lidar**, viendo el primer escalón 4 veces seguidas | la cámara va a 30 cm del suelo mirando hacia adelante: desde arriba de una bajada **no ve escalones**, ve el piso de abajo o la pared de enfrente. Si la cámara pudiera vetarla, la bajada se descartaría siempre |
+
+- `subida` (por defecto): lo de la tabla. `requerida`: la cámara confirma todo (no recomendado
+  para bajadas). `off`: solo el lidar.
+- Un "la cámara mira ahí y no ve escalera" descarta la candidata **2 minutos**, no para siempre.
+
+### Por qué una BAJADA se ve solo de cerca (geometría del L1)
+El L1 va en la cabeza, a ~30 cm del suelo. Un escalón de 17 cm queda en su **sombra** durante
+0.57 × (distancia al borde): con el hocico a 0.7 m del borde no se ve **nada** del primer escalón
+(solo "una caída"), a 0.35 m se ven ~10 cm de huella, y pegado al borde deja de ver el suelo de
+delante. Por eso go2_escaleras se acerca despacio hasta 25 cm del borde (los pies quedan a
+42 cm) y, si se pasó, retrocede. Medido con `python3 pruebas/prueba_nucleo.py deteccion`.
+
+### Si NO bajó la escalera, mira esto (en este orden)
+```
+go2 escaleras        # que ve el lidar delante y por que (no) lo toma por escalera
+go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'frontera ...'
+```
+1. **`go2 escaleras` dice `caida a X m pero NO veo el primer escalon`** → el lidar ve el
+   desnivel pero no la huella: está lejos del borde (> 0.55 m) o el primer escalón es raro
+   (muy alto, > 30 cm; alfombra oscura; borde con listón). Acércalo con `go2 manejar` hasta
+   ~30 cm del borde y vuelve a mirar. Si sigue sin verla, con `go2 bajar` tampoco va a bajar:
+   **por diseño** (sin huella vista = balcón).
+2. **En el log sale `DESCARTO la escalera de bajar ... la camara`** → versión anterior o
+   `go2 escaleras vision requerida`: la cámara nunca ve una bajada desde arriba. Pon
+   `go2 escaleras vision subida` (ahora es el valor por defecto).
+3. **La escalera está en la lista pero `(sin usar)` y el perro sigue explorando** → política
+   `al_final`: va al terminar el piso. Si el piso no "termina" (fantasmas, zonas que fallan),
+   `go2 escaleras inmediato` o `go2 bajar` con el perro mirándola.
+4. **`escalera no tomada (no confirme la escalera de bajar: ...)`** → llegó al pie pero al
+   acercarse no vio la huella (ver 1). Tiene 3 intentos; después la ignora.
+5. **`el perro no avanza en la escalera`** → la marcha FreeWalk no se puso o el perro no camina
+   a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2`.
+6. **`no hay espacio para girar junto a la escalera`** → necesita 38 cm libres alrededor para
+   girar 180° a 65 cm del borde: pasillos de menos de 80 cm no.
+
 ### Órdenes
 ```
-go2 escaleras                   # escaleras vistas y a qué piso llevan
+go2 escaleras                   # escaleras vistas, candidatas y que ve el lidar delante
 go2 escaleras inmediato         # tomarlas apenas las ve
 go2 escaleras al_final          # tomarlas al terminar el piso
 go2 escaleras off               # no tomarlas nunca
-go2 subir                       # tomar a mano la que tiene delante
-go2 bajar
+go2 escaleras vision subida|requerida|off
+go2 subir                       # tomar a mano la que tiene delante (de frente)
+go2 bajar                       # idem, gira 180 y baja en reversa
 ```
 **La primera vez, pruébalo a mano y con alguien al lado de la escalera.**
+
+## Nav2 en la GPU: no se puede (y qué sí va en la GPU)
+Nav2 (planificador, controlador MPPI, costmaps, SLAM) es código de CPU: no tiene versión CUDA
+ni se puede "mandar a la GPU" con un parámetro. Lo único con GPU en Nav2 son los plugins de
+NVIDIA **Isaac ROS** (nvblox como capa de costmap, cuVSLAM), que son otra pila completa
+(contenedores Isaac ROS, otros sensores) y no se enchufan a este sistema. En esta laptop la GPU
+la usa **YOLO** (`go2_vision`, FP16 con CUDA), que es lo pesado; Nav2 + slam_toolbox + el
+limpiador consumen ~1–2 núcleos. Si la CPU va justa:
+- `go2 lanzar vision:=false` quita la cámara (la visión ya corre con `nice 10`, detrás de Nav2);
+- en `nav2.yaml` baja `batch_size` (1500 → 1000) y `time_steps` (56 → 40) del MPPI, y
+  `update_frequency` del costmap local (10 → 5).
+
+## Pruebas sin el perro y sin ROS
+```
+python3 pruebas/prueba_nucleo.py           # deteccion de bajadas por distancia, balcon, subir y bajar en el simulador, fronteras
+python3 pruebas/prueba_nucleo.py bajar     # la bajada en reversa paso a paso
+```
+Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanzan todo con ROS 2.
 
 ## Si algo falla
 - **El perro hace menos de lo que se le pide** (gira o camina más lento que la `orden` de
@@ -202,6 +266,7 @@ go2 bajar
   - el lidar se apaga si el perro está echado: `go2 levantar`.
 - **El perro no se mueve:** `move` en `go2 ver` debe estar en ~20 Hz mientras navega. Si está en
   20 y no camina, el control remoto o la app tienen el mando: suelta los joysticks y cierra la app.
+- **No bajó la escalera:** ver "Si NO bajó la escalera" más arriba (`go2 escaleras` lo dice).
 - **Ajustes:** `~/go2_ws/src/go2_nav/config/nav2.yaml`. Después:
   ```
   cd ~/go2_ws && colcon build --symlink-install

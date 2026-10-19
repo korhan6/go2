@@ -1,4 +1,4 @@
-import sys, os, numpy as np
+import os, numpy as np
 d=np.load(os.path.expanduser("~/.go2_nav/vista.npz"))
 v,o,res,N=d["visto"],d["ocup"],float(d["res"]),int(d["n"])
 ii,jj=np.nonzero(v); i0,i1,j0,j1=ii.min()-3,ii.max()+4,jj.min()-3,jj.max()+4

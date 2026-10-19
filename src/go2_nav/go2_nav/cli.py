@@ -10,12 +10,17 @@
   go2 ir A              va al punto A (aunque este en otro piso)    go2 casa    vuelve al inicio
   go2 puntos            lista los puntos     go2 borrar A
   go2 pausa | seguir | parar
-  go2 escaleras         escaleras vistas (portales) y la politica
+  go2 escaleras         escaleras vistas (portales), candidatas, y QUE VE EL LIDAR delante y por que
+                        (no) lo toma por escalera de bajada
   go2 escaleras al_final|inmediato|off
                         al_final: termina el piso y despues toma las escaleras (por defecto)
                         inmediato: apenas ve una escalera, la toma | off: nunca
-  go2 escaleras vision on|off   exigir (on, por defecto) que la CAMARA confirme cada escalera del lidar
-  go2 subir | bajar     toma a mano la escalera que tiene delante (bajar = gira 180 y baja en reversa)
+  go2 escaleras vision subida|requerida|off
+                        subida (por defecto): la camara confirma solo las SUBIDAS; las bajadas las
+                        confirma el lidar viendo el primer escalon (la camara no ve una bajada
+                        desde arriba) | requerida: la camara confirma todo | off: solo el lidar
+  go2 subir | bajar     toma a mano la escalera que tiene delante (subir = de frente;
+                        bajar = gira 180 y baja SIEMPRE en reversa)
   go2 probar_mov        mide si el perro HACE lo que se le pide (gira 3 s y avanza 2 s; 1 m libre delante)
   go2 calibrar_mov      mide la respuesta real del perro (adelante/atras y giros, ~40 s, 1 m libre delante
                         y detras) y la COMPENSA: pide lo necesario para que haga lo que Nav2 quiere
@@ -211,7 +216,7 @@ def probar_mov(nodo):
     if abs(giro) / pedido < 0.8 or d / 0.5 < 0.8:
         print("\n!! El perro hace menos de lo que se le pide. Corre 'go2 calibrar_mov' para medirlo y\n"
               "   compensarlo. Si da menos del 30 %, revisa el perro (la app abierta, otro programa\n"
-              "   mandandole ordenes o la CPU del perro saturada: ver LEEME).")
+              "   mandandole ordenes o la CPU del perro saturada: ver README).")
     else:
         print("\nOK: el perro obedece las ordenes de velocidad.")
     return 0
@@ -323,6 +328,12 @@ def avisos(L, D):
     return ("  !! " + " | ".join(a)) if a else ""
 
 
+def escalera_delante(e):
+    """Hay una caida delante: que dice el lidar de ella (por que no es / es escalera)."""
+    d = e.get("escalera_delante")
+    return ("\n         >> bajada delante: " + d) if d else ""
+
+
 def linea(e):
     L = e.get("limpiador") or {}
     D = e.get("driver") or {}
@@ -334,7 +345,9 @@ def linea(e):
                f(L.get("adelante")), f(L.get("izq")), f(L.get("der")), f(L.get("atras")),
                f(L.get("nubes_hz")), f(L.get("ms_max")), f(D.get("odom_hz")), f(D.get("move_hz")),
                ",".join("%.2f" % v for v in (D.get("orden") or [])) or "-",
-               "%s (aprendidos %s)" % (f(L.get("fantasmas")), f(L.get("fantasmas_aprendidos"))), avisos(L, D), cam(e), e.get("motivo", "") + (("  [" + L["calibracion"] + "]") if L.get("calibracion") else "")))
+               "%s (aprendidos %s)" % (f(L.get("fantasmas")), f(L.get("fantasmas_aprendidos"))), avisos(L, D), cam(e),
+               e.get("motivo", "") + (("  [" + L["calibracion"] + "]") if L.get("calibracion") else "")
+               + escalera_delante(e)))
 
 
 def ver(nodo):
