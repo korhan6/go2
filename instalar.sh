@@ -62,6 +62,10 @@ sed -i "s/__DISTRO__/$DISTRO/" "$WS/go2_env.sh"
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/go2" <<EOF
 #!/bin/bash
+# si la terminal quedo en una carpeta borrada (p. ej. ~/go2_nav_ros2 despues de reinstalar),
+# Nav2 (bt_navigator) y la camara se caen con "cannot get current path": siempre desde \$HOME
+[ -d "\$PWD" ] && cd "\$PWD" 2>/dev/null && pwd >/dev/null 2>&1 || cd "\$HOME"
+case "\$1" in lanzar|sim) cd "\$HOME" ;; esac
 source "$WS/go2_env.sh" >/dev/null
 case "\$1" in
   lanzar)  shift
