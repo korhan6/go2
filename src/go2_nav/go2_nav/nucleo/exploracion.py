@@ -99,17 +99,48 @@ class Vista(object):
         return g, x0 - VRES / 2, y0 - VRES / 2
 
 
-def ocupado_segun_slam(mapa, sl):
-    """Celdas ocupadas del mapa de slam_toolbox (OccupancyGrid) dentro del recorte sl, sin los
-    puntitos sueltos (una pared tiene vecinos ocupados)."""
-    out = np.zeros((sl[0].stop - sl[0].start, sl[1].stop - sl[1].start), bool)
-    if mapa is None:
-        return out
+def paredes_slam(mapa, largo_min=4, engordar=1):
+    """Paredes del mapa de slam_toolbox (OccupancyGrid) como mascara bool (alto x ancho).
+
+    1) une los puntos de una misma pared separados por 1 celda (una pared vista "punteada");
+    2) quita los pedazos de menos de largo_min celdas (20 cm): un puntito de ruido, un rebote;
+    3) engorda 'engordar' celdas (5 cm) para que el planificador no pase por una rendija.
+    Lo desconocido NO es pared."""
     from scipy import ndimage
     g = np.array(mapa.data, np.int8).reshape(mapa.info.height, mapa.info.width)
     occ = g >= 50
-    vecinos = ndimage.convolve(occ.astype(np.uint8), np.ones((3, 3), np.uint8), mode="constant") - occ
-    ii, jj = np.nonzero(occ & (vecinos >= 1))
+    if not occ.any():
+        return occ
+    ocho = np.ones((3, 3), bool)
+    unido = ndimage.binary_dilation(occ, ocho)
+    lab, n = ndimage.label(unido, structure=ocho)
+    # largo de cada pedazo = celdas ocupadas de verdad que tiene
+    tam = np.bincount(lab[occ], minlength=n + 1)
+    tam[0] = 0
+    # grosor real (sin el engorde del paso 1) + los huecos de 1 celda rellenados
+    pared = (tam >= largo_min)[lab] & (occ | _huecos_de_una(occ))
+    if engordar > 0 and pared.any():
+        pared = ndimage.binary_dilation(pared, ocho, iterations=engordar)
+    return pared
+
+
+def _huecos_de_una(occ):
+    """Celdas libres con pared a ambos lados (horizontal, vertical o diagonal): hueco de 1 celda."""
+    p = np.pad(occ, 1)
+    c = p[1:-1, 1:-1]
+    h = p[1:-1, :-2] & p[1:-1, 2:]
+    v = p[:-2, 1:-1] & p[2:, 1:-1]
+    d1 = p[:-2, :-2] & p[2:, 2:]
+    d2 = p[:-2, 2:] & p[2:, :-2]
+    return ~c & (h | v | d1 | d2)
+
+
+def ocupado_segun_slam(mapa, sl):
+    """Paredes del SLAM (paredes_slam) llevadas a la rejilla de exploracion, dentro del recorte sl."""
+    out = np.zeros((sl[0].stop - sl[0].start, sl[1].stop - sl[1].start), bool)
+    if mapa is None:
+        return out
+    ii, jj = np.nonzero(paredes_slam(mapa, largo_min=2, engordar=0))
     if len(ii) == 0:
         return out
     x = mapa.info.origin.position.x + (jj + 0.5) * mapa.info.resolution
@@ -170,6 +201,7 @@ def fronteras(vista, pose, mapa_slam, excluir, vetadas, frontera_min, hueco_min,
     excluir      [(x, y)] zonas de escaleras: lo que hay mas alla se descubre CRUZANDOLAS
     vetadas      [(x, y)] metas que fallaron
     Devuelve (lista de dict(x, y, n, d, costo[, directa]), celdas de frontera [(x, y)]).
+    directa = no hay camino por suelo visto: el camino cruza lo no visto (nunca paredes).
     """
     from scipy import ndimage
     sl = vista.recorte(8)
@@ -235,25 +267,23 @@ def fronteras(vista, pose, mapa_slam, excluir, vetadas, frontera_min, hueco_min,
     xs, ys = mundo(fi + sl[0].start, fj + sl[1].start)
     celdas_fr = list(zip(xs.tolist(), ys.tolist()))
     if not out:
-        # ninguna zona con camino CONOCIDO: igual voy a la mas cercana en linea recta y que
-        # Nav2 busque el camino (atraviesa lo no visto). Mejor intentar que quedarse girando.
+        # ninguna zona con camino por suelo YA VISTO: voy a la mas cercana por un camino que puede
+        # cruzar lo no visto pero NUNCA una pared conocida (antes era en linea recta, y Nav2 la
+        # buscaba cruzando la pared en vez de salir por la puerta)
+        dlibre = bfs(~ocup & (dist >= 0.15), si - sl[0].start, sj - sl[1].start)
         for k, ob in objetos:
             a, b_ = np.nonzero(lab[ob] == k)
             if len(a) < frontera_min:
                 continue
             a = a + ob[0].start
             b_ = b_ + ob[1].start
-            ok = dist[a, b_] >= 0.15
-            if not ok.any():
-                continue
-            xs, ys = mundo(a + sl[0].start, b_ + sl[1].start)
-            d = np.hypot(xs - pose[0], ys - pose[1])
-            d[~ok] = np.inf
-            cand = np.nonzero(ok & (d >= d_min_meta))[0]
+            d = dlibre[a, b_].copy()
+            d[dist[a, b_] < 0.15] = np.inf
+            cand = np.nonzero(np.isfinite(d) & (d >= d_min_meta))[0]
             if not len(cand):
                 continue
             b = int(cand[np.argmin(d[cand])])
-            x, y = float(xs[b]), float(ys[b])
+            x, y = mundo(int(a[b] + sl[0].start), int(b_[b] + sl[1].start))
             if vetada(x, y):
                 continue
             out.append({"x": x, "y": y, "n": int(len(a)), "d": float(d[b]), "directa": True,

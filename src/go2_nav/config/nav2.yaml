@@ -211,13 +211,19 @@ global_costmap:
       rolling_window: true
       width: 40
       height: 40
-      # sin static_layer, lo no visto cuenta como libre (el planificador igual lo cruzaba con
-      # allow_unknown) y RViz no pinta un cuadro gris de 40 x 40 m
+      # lo no visto cuenta como libre (para explorar hay que planificar por lo no visto)
       track_unknown_space: false
-      # SIN static_layer: los puntitos de ruido del mapa de SLAM se volvian "muros" y Nav2 no
-      # encontraba ruta (ni para volver al inicio). Lo que el perro VE (limpio, con memoria) se
-      # marca aqui y se borra solo cuando el lidar ve que ya no esta.
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # static_layer = las PAREDES del SLAM, pero filtradas por go2_gestor (/go2/mapa_paredes):
+      # solo lineas de pared (>= 2 vecinos), sin los puntitos de ruido que antes se volvian
+      # "muros" y dejaban a Nav2 sin ruta. Sin esta capa el planificador solo conocia lo que el
+      # lidar ve AHORA (< 3 m): una pared vista con huecos o desde lejos la cruzaba en vez de
+      # salir por la puerta. Lo que el perro ve (obstacle_layer) se suma encima.
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /go2/mapa_paredes
+        map_subscribe_transient_local: True
+        subscribe_to_updates: False
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True

@@ -195,6 +195,41 @@ def prueba_maniobras(cuales=("bajar", "subir")):
     print("   OK")
 
 
+def prueba_paredes():
+    print("== paredes del SLAM para Nav2: el ruido no es pared, una pared con huecos se cierra")
+    from types import SimpleNamespace
+    H = W = 60
+    g = np.zeros((H, W), np.int8)
+    g[30, 5:55:2] = 100            # pared vista "punteada" (un punto si y uno no)
+    g[10, 10] = 100                # ruido suelto
+    g[30, 23:37] = 0               # una puerta de 70 cm (14 celdas)
+    mapa = SimpleNamespace(data=g.ravel().tolist(), info=SimpleNamespace(height=H, width=W, resolution=0.05,
+                           origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0))))
+    pared = EX.paredes_slam(mapa)
+    assert not pared[10, 10], "un puntito de ruido no puede ser pared"
+    assert pared[30, 6:22].all(), "la pared punteada tiene que quedar continua"
+    assert not pared[30, 25:35].any(), "la puerta tiene que seguir abierta (solo 5 cm menos por lado)"
+    print("   OK")
+    print("== meta de respaldo (sin camino por suelo visto): rodea la pared, no la cruza")
+    v = EX.Vista()
+    # isla vista de 2 x 2 m alrededor del perro, pared al norte de 6 m, nada mas visto
+    for x in np.arange(-0.95, 1.0, 0.1):
+        for y in np.arange(-0.95, 1.0, 0.1):
+            i, j = EX.celda(x, y)
+            v.visto[i, j] = 3
+    for x in np.arange(-3.05, 3.1, 0.1):
+        i, j = EX.celda(x, 1.05)
+        v.ocup[i, j] = 10
+    pose = (0.0, 0.0, math.pi / 2)            # mirando a la pared
+    v.pisado(pose)
+    fr, _ = EX.fronteras(v, pose, None, [], [], 5, 0.5, 5.0, 0.7)   # holgura imposible -> respaldo
+    print("   metas de respaldo: %s" % [(round(f["x"], 1), round(f["y"], 1), round(f["d"], 1), f.get("directa"))
+                                       for f in fr[:3]])
+    assert fr and all(f.get("directa") for f in fr)
+    assert all(f["y"] < 1.0 for f in fr), "ninguna meta detras de la pared"
+    print("   OK")
+
+
 def prueba_exploracion():
     print("== exploracion: un cuarto de 4 x 4 con una puerta de 0.8 m")
     v = EX.Vista()
@@ -230,6 +265,7 @@ if __name__ == "__main__":
         prueba_posible()
     if que in ("todo", "exploracion"):
         prueba_exploracion()
+        prueba_paredes()
     if que in ("todo", "maniobras"):
         prueba_maniobras()
     if que in ("bajar", "subir"):

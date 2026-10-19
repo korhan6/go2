@@ -116,6 +116,10 @@ class Gestor(Node):
         # lo que el GESTOR cree que ya vio (blanco = suelo visto, negro = obstaculo) y las fronteras
         # (verde) y la meta (amarillo): para ver en RViz por que va (o no va) a algun lado
         self.pub_mapa_v = self.create_publisher(OccupancyGrid, "/go2/mapa_explorado", qmap)
+        # las PAREDES del SLAM, sin ruido, para el costmap global de Nav2 (static_layer): sin esto
+        # el planificador solo conocia lo que el lidar ve ahora (< 3 m) y cruzaba paredes con huecos
+        self.pub_paredes = self.create_publisher(OccupancyGrid, "/go2/mapa_paredes", qmap)
+        self.paredes_de = None       # stamp del /map con que se hicieron las ultimas paredes
         self.pub_fr = self.create_publisher(MarkerArray, "/go2/fronteras", 1)
         self.ult_fronteras = []
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose", callback_group=cb)
@@ -975,6 +979,7 @@ class Gestor(Node):
             with self.lock_rej:
                 r = self.vista.rejilla_ocupacion()
             if r is None:
+                self.publicar_paredes()
                 return
             g, x0, y0 = r
             msg = OccupancyGrid()
@@ -986,6 +991,7 @@ class Gestor(Node):
             msg.info.origin.orientation.w = 1.0
             msg.data = g.ravel().tolist()
             self.pub_mapa_v.publish(msg)
+            self.publicar_paredes()
             ma = MarkerArray()
             mk = Marker()
             mk.header = msg.header
@@ -1010,6 +1016,33 @@ class Gestor(Node):
             self.pub_fr.publish(ma)
         except Exception as e:      # la vista nunca debe tumbar el gestor
             self.get_logger().warn("publicar_explorado: %r" % e, throttle_duration_sec=10.0)
+
+    def publicar_paredes(self):
+        """/go2/mapa_paredes: 100 = pared del SLAM (filtrada), 0 = todo lo demas (lo no visto
+        sigue siendo transitable para el planificador). Solo cuando cambia el /map."""
+        m = self.mapa
+        if m is None:
+            if self.paredes_de != "vacio":          # piso nuevo: borrar las paredes del anterior
+                g = OccupancyGrid()
+                g.header.frame_id = "map"
+                g.header.stamp = self.get_clock().now().to_msg()
+                g.info.resolution, g.info.width, g.info.height = 0.05, 1, 1
+                g.info.origin.orientation.w = 1.0
+                g.data = [0]
+                self.pub_paredes.publish(g)
+                self.paredes_de = "vacio"
+            return
+        clave = (m.header.stamp.sec, m.header.stamp.nanosec, m.info.width, m.info.height)
+        if clave == self.paredes_de:
+            return
+        pared = EX.paredes_slam(m)
+        g = OccupancyGrid()
+        g.header.frame_id = m.header.frame_id or "map"
+        g.header.stamp = self.get_clock().now().to_msg()
+        g.info = m.info
+        g.data = (pared.astype("int8") * 100).ravel().tolist()
+        self.pub_paredes.publish(g)
+        self.paredes_de = clave
 
     # ------------------------------------------------------------------ ordenes
     def srv_comando(self, req, res):

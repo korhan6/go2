@@ -275,6 +275,16 @@ Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanz
   - el lidar se apaga si el perro está echado: `go2 levantar`.
 - **El perro no se mueve:** `move` en `go2 ver` debe estar en ~20 Hz mientras navega. Si está en
   20 y no camina, el control remoto o la app tienen el mando: suelta los joysticks y cierra la app.
+- **La ruta (línea verde en RViz) cruza una pared en vez de salir por la puerta:** el costmap
+  global usa las paredes del SLAM (`/go2/mapa_paredes`, filtradas por el gestor: sin puntitos de
+  ruido y con los huecos de 5 cm cerrados) más lo que ve el lidar. Si pasa igual, la pared
+  todavía no está en el mapa del SLAM (no la vio de frente): la ruta se corrige sola cuando la ve.
+- **`!! LIDAR CORTADO`:** dejaron de llegar nubes del lidar. El perro se queda quieto hasta que
+  vuelven. Revisa el cable (bien metido en el perro y en la laptop), la batería, y
+  `ros2 topic hz /utlidar/cloud_deskewed` (debe dar ~15).
+- **`[interrumpida: algo cerca]`:** la calibración de 2 vueltas se cortó porque había algo a
+  menos de ~45 cm. Empieza `go2 explorar` con el perro en un lugar despejado, a más de 50 cm de
+  paredes y muebles.
 - **No bajó la escalera:** ver "Si NO bajó la escalera" más arriba (`go2 escaleras` lo dice).
 - **Ajustes:** `~/go2_ws/src/go2_nav/config/nav2.yaml`. Después:
   ```
