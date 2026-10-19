@@ -36,7 +36,7 @@ from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from .nube import a_cuerpo, crear_nube, leer_xyz, voxel_unico, yaw_de_quat
-from .nucleo.terreno import ANCHO2, LARGO2     # medio largo / medio ancho del cuerpo (0.70 x 0.31 m)
+from .nucleo.terreno import ANCHO2, LARGO2, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
 
 
 # ---------------------------------------------------------------- mascara aprendida
@@ -184,7 +184,11 @@ class Limpiador(Node):
         self.caida_min = p("caida_min", 0.12).value
         self.altura_base = p("altura_base", 0.33).value     # base_link sobre el suelo (si no se ve)
         self.persistencia = p("persistencia", True).value
-        self.rango_scan = p("rango_scan", 10.0).value
+        # /scan para el SLAM: hasta 6 m (el L1 de lejos casi no da puntos en la franja de los
+        # obstaculos), haces de 1 grado, y 0.8 s de nubes juntas. slam.yaml: max_laser_range >= esto
+        self.rango_scan = p("rango_scan", 6.0).value
+        self.haces_scan = p("haces_scan", 360).value
+        self.ventana_scan = p("ventana_scan", 0.8).value
         self.ruta_mascara = os.path.expanduser(p("archivo_mascara", "~/.go2_nav/propio.npz").value)
 
         self.mascara = Mascara.cargar(self.ruta_mascara)
@@ -423,27 +427,22 @@ class Limpiador(Node):
         return np.concatenate(out).astype(np.float32)
 
     def publicar_scan(self, obst, x, y, yaw, stamp):
+        """/scan para slam_toolbox con los obstaculos de la ultima ventana_scan s (en odom: juntar
+        nubes no se mueve aunque el perro camine). Ver terreno.rangos_scan."""
         ahora = time.monotonic()
         self.hist_scan.append((ahora, obst))
-        while self.hist_scan and ahora - self.hist_scan[0][0] > 0.35:
+        while self.hist_scan and ahora - self.hist_scan[0][0] > self.ventana_scan:
             self.hist_scan.popleft()
         pts = np.concatenate([o for _, o in self.hist_scan]) if self.hist_scan else obst
         s = LaserScan()
         s.header.frame_id = "base_link"
         s.header.stamp = stamp
-        N = 720
+        N = self.haces_scan
         s.angle_min, s.angle_max = -math.pi, math.pi - 2 * math.pi / N
         s.angle_increment = 2 * math.pi / N
         s.scan_time, s.time_increment = 0.066, 0.0
         s.range_min, s.range_max = 0.20, float(self.rango_scan)
-        rangos = np.full(N, np.inf, np.float32)
-        if len(pts):
-            fx, fy = a_cuerpo(pts, x, y, yaw)
-            r = np.hypot(fx, fy)
-            a = np.floor((np.arctan2(fy, fx) + math.pi) / s.angle_increment).astype(np.int64) % N
-            ok = (r > s.range_min) & (r < s.range_max)
-            np.minimum.at(rangos, a[ok], r[ok].astype(np.float32))
-        s.ranges = rangos.tolist()
+        s.ranges = rangos_scan(pts, x, y, yaw, N, s.range_min, s.range_max).tolist()
         self.pub_scan.publish(s)
 
     def holguras(self, obst, virt, x, y, yaw):

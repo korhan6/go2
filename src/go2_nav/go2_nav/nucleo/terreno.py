@@ -450,3 +450,48 @@ def analizar_subida(fx, fy, h):
     return {"bx": float(a + b * c), "by": c, "dist": float(a / norma),
             "ang": float(math.atan2(-b, 1.0)), "ancho": float(lats[-1] - lats[0] + 0.10),
             "abierta": bool(abs(lats[0]) > 0.39 or abs(lats[-1]) > 0.39)}
+
+
+# ---------------------------------------------------------------- escaneo 2D para el SLAM
+def rangos_scan(pts, x, y, yaw, n=360, r_min=0.20, r_max=6.0, hueco_max=3):
+    """Obstaculos (odom) -> rangos de un LaserScan de n haces alrededor del perro (inf = nada).
+
+    El L1 es un lidar 3D de pocos puntos: en la franja de alturas de los obstaculos, una pared
+    a 3 m recibe pocos puntos por nube, y muchos haces quedaban vacios. slam_toolbox solo marca
+    suelo libre a lo largo de los haces CON lectura: el mapa salia como una estrella de rayos
+    sueltos con puntitos negros, en vez de un abanico lleno con paredes continuas. Por eso:
+      - haces de 1 grado (a 4 m, 7 cm: como la celda del mapa), no de 0.5;
+      - un haz vacio entre dos con lectura parecida (la misma pared, a <= hueco_max haces) se
+        rellena interpolando: la pared queda continua y el suelo delante, libre;
+      - nada mas alla de r_max (el SLAM debe tener max_laser_range >= r_max: si no, cada lectura
+        entre los dos se vuelve un rayo libre de max_laser_range sin pared al final).
+    """
+    rangos = np.full(n, np.inf, np.float32)
+    if len(pts):
+        fx, fy = a_cuerpo(pts, x, y, yaw)
+        r = np.hypot(fx, fy)
+        a = np.floor((np.arctan2(fy, fx) + math.pi) / (2 * math.pi / n)).astype(np.int64) % n
+        ok = (r > r_min) & (r < r_max)
+        np.minimum.at(rangos, a[ok], r[ok].astype(np.float32))
+    if hueco_max > 0:
+        rangos = _rellenar_huecos(rangos, hueco_max)
+    return rangos
+
+
+def _rellenar_huecos(rangos, hueco_max):
+    n = len(rangos)
+    llenos = np.nonzero(np.isfinite(rangos))[0]
+    if len(llenos) < 2:
+        return rangos
+    out = rangos.copy()
+    sig = np.r_[llenos[1:], llenos[0] + n]          # el siguiente haz con lectura (circular)
+    for i0, i1 in zip(llenos, sig):
+        hueco = i1 - i0 - 1
+        if hueco < 1 or hueco > hueco_max:
+            continue
+        r0, r1 = float(rangos[i0]), float(rangos[i1 % n])
+        if abs(r0 - r1) > max(0.10, 0.04 * min(r0, r1)):
+            continue                                 # bordes distintos: un hueco de verdad (puerta)
+        for k in range(1, hueco + 1):
+            out[(i0 + k) % n] = r0 + (r1 - r0) * k / (hueco + 1)
+    return out

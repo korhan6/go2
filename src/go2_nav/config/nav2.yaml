@@ -54,10 +54,15 @@ controller_server:
       # despues sigue con MPPI. Tambien gira rapido al rumbo final. Ideal para un perro.
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_mppi_controller::MPPIController"
-      angular_dist_threshold: 0.6         # si la ruta va a mas de ~35 grados, primero gira de frente a ella
+      # si la ruta va a mas de ~23 grados, primero gira en el sitio de frente a ella, frenando a
+      # tiempo: el Go2 tarda ~0.3 s en responder, y con 0.9 rad/s y 2.5 rad/s2 se pasaba de la
+      # linea y despues zigzagueaba para volver. closed_loop false: frena segun lo que se le
+      # ORDENO, no segun la odometria (que va atrasada y le hacia creer que giraba mas lento)
+      angular_dist_threshold: 0.4
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.9
-      max_angular_accel: 2.5
+      rotate_to_heading_angular_vel: 0.7
+      max_angular_accel: 1.6
+      closed_loop: false
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
       time_steps: 56
@@ -67,10 +72,10 @@ controller_server:
       ax_min: -2.0
       ay_max: 2.0
       ay_min: -2.0
-      az_max: 3.0
+      az_max: 2.0                         # cambios de giro mas suaves (el perro no los sigue mas rapido)
       vx_std: 0.2
       vy_std: 0.2
-      wz_std: 0.4
+      wz_std: 0.3                         # menos ruido de giro en las muestras: menos zigzag
       vx_max: 0.6
       vx_min: -0.3
       vy_max: 0.35

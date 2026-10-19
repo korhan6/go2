@@ -165,10 +165,13 @@ class Escaleras(Node):
         e = self.espera
         x, y, z, yaw, pitch, roll = self.pose
         err = ang(e["yaw"] - yaw)
-        if abs(err) > math.radians(6) and ahora - e["t"] < 8.0:
-            self.mover(0.0, 0.0, math.copysign(max(self.cfg["w_min"], min(0.8, 1.5 * abs(err))), err))
+        # el giro que lleva sigue ~0.25 s despues de parar: se cuenta para no pasarse
+        if abs(err - 0.25 * e.get("w", 0.0)) > math.radians(6) and ahora - e["t"] < 8.0:
+            e["w"] = math.copysign(max(self.cfg["w_min"], min(0.8, 1.5 * abs(err))), err)
+            self.mover(0.0, 0.0, e["w"])
             e["t_quieto"] = ahora
             return
+        e["w"] = 0.0
         c = self.detector.confirmada(e["tipo"], ahora, (x, y))
         if c is not None and c.get("dist", 9.0) < 2.2:
             self.mover(0.0, 0.0, 0.0)

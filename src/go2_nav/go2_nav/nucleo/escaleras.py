@@ -30,6 +30,16 @@ LIMITE = {"DETENER": 3, "ALINEAR": 15, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 
           "ACERCAR": 12, "GIRAR": 20, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
           "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "GIRAR_FRENTE": 20, "RESTAURAR": 10}
 EN_ESCALERA = ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
+# Alinearse SIN PASARSE con un perro que responde tarde (~0.3 s) y no gira lento (w_min):
+#   grueso: gira normal hasta que lo que falta (contando lo que va a seguir girando) es ZONA_FINA;
+#   espera a que quede quieto;
+#   fino:   pulsos cortos que corrigen la MITAD de lo que falta, esperando quieto entre pulsos.
+# Nunca cruza la meta aunque el retraso real sea otro (antes: se pasaba y volvia, en zigzag).
+LAG_GIRO = 0.35              # s: lo que sigue girando despues de la orden (estimado)
+ZONA_FINA = math.radians(25)
+QUIETO_W = 0.08              # rad/s medidos: ya no gira
+T_ASENTAR = 0.7              # s minimos entre una orden de giro y la siguiente decision fina
+                             # (con retraso, justo despues de la orden el perro parece quieto)
 
 
 def media_ang(angs):
@@ -137,6 +147,7 @@ class Maniobra(object):
         self.m = {}                 # memoria de la maniobra en curso
         self.resultado = None       # dict al terminar (ok, motivo, tipo, dz, yaw_n, E)
         self.info = ""
+        self.w_ult = 0.0            # ultimo giro ordenado (para anticipar el frenado)
 
     # ---------------------------------------------------------------- estado
     @property
@@ -197,6 +208,37 @@ class Maniobra(object):
     def _girar(self, err):
         return 0.0, 0.0, math.copysign(max(self.cfg["w_min"], min(0.7, 1.5 * abs(err))), err)
 
+    def _girar_a(self, c, yref, tol):
+        """Giro en el sitio hasta el rumbo yref sin pasarse. Devuelve (alineado, (vx, vy, wz))."""
+        ahora, yaw = c["ahora"], c["yaw"]
+        err = ang(yref - yaw)
+        g = self.m.get("giro")
+        if g is None or g["yref"] != yref:
+            g = self.m["giro"] = {"yref": yref, "t": ahora, "yaw": yaw, "w": 0.0, "pulso": 0.0,
+                                  "fino": False, "espera": 0.0}
+        dt = ahora - g["t"]
+        if dt > 0.05:                             # giro medido (rad/s), suavizado
+            g["w"] = 0.5 * g["w"] + 0.5 * ang(yaw - g["yaw"]) / dt
+            g["t"], g["yaw"] = ahora, yaw
+        quieto = abs(g["w"]) < QUIETO_W and ahora >= g["espera"]
+        if ahora < g["pulso"]:                    # pulso fino en curso
+            return False, (0.0, 0.0, math.copysign(self.cfg["w_min"], err))
+        if abs(err) < tol:
+            return quieto, (0.0, 0.0, 0.0)
+        # lo que va a seguir girando: lo medido o lo ultimo ordenado, lo que sea mas
+        sigue = max(abs(g["w"]), abs(self.w_ult)) * LAG_GIRO
+        if not g["fino"] and abs(err) - sigue > ZONA_FINA:
+            return False, self._girar(err)       # grueso
+        if not g["fino"]:
+            g["fino"] = True                      # (una vez cerca, ya no vuelve al grueso)
+            g["espera"] = ahora + T_ASENTAR
+        if not quieto:
+            return False, (0.0, 0.0, 0.0)         # esperar a que termine de girar
+        # fino: un pulso que gira la mitad de lo que falta (a w_min), entre 0.1 y 0.6 s
+        g["pulso"] = ahora + max(0.1, min(0.6, 0.5 * abs(err) / self.cfg["w_min"]))
+        g["espera"] = g["pulso"] + T_ASENTAR
+        return False, (0.0, 0.0, math.copysign(self.cfg["w_min"], err))
+
     def _w_rumbo(self, yref, yaw):
         """Giro suave para mantener el rumbo yref."""
         return _lim(1.2 * ang(yref - yaw), 0.3)
@@ -240,7 +282,9 @@ class Maniobra(object):
         x, y, z, yaw, pitch, roll = pose
         ctx = {"ahora": ahora, "dt": ahora - self.t_estado, "P": np.array([x, y]), "z": z,
                "yaw": yaw, "pitch": pitch, "roll": roll, "det": det, "holg": holg}
-        return fn(ctx) or (0.0, 0.0, 0.0)
+        cmd = fn(ctx) or (0.0, 0.0, 0.0)
+        self.w_ult = cmd[2]
+        return cmd
 
     # cada estado: devuelve (vx, vy, wz) o None (= quieto)
     def _e_detener(self, c):
@@ -256,12 +300,12 @@ class Maniobra(object):
             self._ir("ALINEAR", c["ahora"])
 
     def _e_alinear(self, c):
-        err = ang(self.m["yaw_n"] - c["yaw"])
-        if abs(err) < math.radians(3):
+        listo, cmd = self._girar_a(c, self.m["yaw_n"], math.radians(3))
+        if listo:
             self.m["P_medir"] = c["P"].copy()
             self._ir("MEDIR", c["ahora"])
             return None
-        return self._girar(err)
+        return cmd
 
     def _e_medir(self, c):
         """De frente y quieto: medir bien el borde y el centro de la escalera."""
@@ -329,14 +373,14 @@ class Maniobra(object):
 
     def _e_girar(self, c):
         """Solo bajada: 180 grados, para bajar de espaldas."""
-        err = ang(self.m["yaw_b"] - c["yaw"])
-        if abs(err) < math.radians(3):
+        listo, cmd = self._girar_a(c, self.m["yaw_b"], math.radians(3))
+        if listo:
             self._ir("VERIFICAR", c["ahora"])
             return None
         if c["holg"] and c["holg"]["giro"] < self.cfg["radio_giro"]:
             self.abortar("no hay espacio para girar junto a la escalera", c["ahora"])
             return None
-        return self._girar(err)
+        return cmd
 
     def _e_verificar(self, c):
         """De espaldas a la bajada, ultima comprobacion antes de poner la marcha:
@@ -464,11 +508,11 @@ class Maniobra(object):
 
     def _e_girar_frente(self, c):
         """Abajo, de espaldas: vuelve a mirar hacia donde iba (si hay espacio)."""
-        err = ang(self.m["yaw_n"] - c["yaw"])
-        if abs(err) < math.radians(4) or (c["holg"] and c["holg"]["giro"] < self.cfg["radio_giro"]):
+        listo, cmd = self._girar_a(c, self.m["yaw_n"], math.radians(4))
+        if listo or (c["holg"] and c["holg"]["giro"] < self.cfg["radio_giro"]):
             self._ir("LISTO", c["ahora"])      # sin espacio: se queda de espaldas
             return None
-        return self._girar(err)
+        return cmd
 
     def _e_listo(self, c):
         dz = float(self.m.get("dz", 0.0))

@@ -279,6 +279,18 @@ Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanz
   global usa las paredes del SLAM (`/go2/mapa_paredes`, filtradas por el gestor: sin puntitos de
   ruido y con los huecos de 5 cm cerrados) más lo que ve el lidar. Si pasa igual, la pared
   todavía no está en el mapa del SLAM (no la vio de frente): la ruta se corrige sola cuando la ve.
+- **El mapa del SLAM sale como una estrella de rayos con puntitos negros:** el L1 es un lidar 3D
+  de pocos puntos, y el `/scan` que se le arma al SLAM quedaba con la mayoría de los haces
+  vacíos. Ahora junta 0.8 s de nubes, usa haces de 1° y rellena los huecos chicos de una misma
+  pared (de 27 % a 62 % de haces con lectura en la prueba). Además el alcance del `/scan` y del
+  SLAM es el mismo (6 m): antes, cada lectura entre 8 y 10 m se dibujaba como un rayo largo sin
+  pared al final. El mapa nuevo se ve bien desde un mapeo NUEVO (reinicia `go2 lanzar`).
+- **Se pasa al alinearse con la ruta y vuelve (zigzag):** el Go2 no gira más lento de ~0.4 rad/s
+  y responde ~0.3 s tarde. El driver subía cualquier corrección chica de Nav2 a 0.40 rad/s, se
+  pasaba, Nav2 corregía al otro lado y así sin fin. Ahora una corrección de menos de 0.20 rad/s
+  en el sitio se ignora (`w_quieto` del driver), el giro inicial de Nav2 frena antes, y la
+  maniobra de escaleras gira en grueso, espera quieto y termina con pulsos cortos que nunca
+  cruzan. Si todavía se pasa, sube `w_quieto` a 0.25.
 - **`!! LIDAR CORTADO`:** dejaron de llegar nubes del lidar. El perro se queda quieto hasta que
   vuelven. Revisa el cable (bien metido en el perro y en la laptop), la batería, y
   `ros2 topic hz /utlidar/cloud_deskewed` (debe dar ~15).

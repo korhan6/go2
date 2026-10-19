@@ -230,6 +230,66 @@ def prueba_paredes():
     print("   OK")
 
 
+def prueba_scan():
+    print("== /scan para el SLAM con un lidar ralo como el L1 (10 % de los puntos de las paredes)")
+    m = M.casa_demo()
+    r = M.RobotSim(m, x=3.0, y=3.0, yaw=0.0, ruido_real=False)
+    r.dormir(0.2)
+    xyz = np.concatenate([c for _t, c in r.nubes_nuevas()])
+    pared = xyz[(xyz[:, 2] > 0.10) & (xyz[:, 2] < 0.55)]
+    rng = np.random.default_rng(0)
+    rala = pared[rng.random(len(pared)) < 0.10]
+    antes = terreno.rangos_scan(rala, 3.0, 3.0, 0.0, n=720, r_max=10.0, hueco_max=0)
+    ahora = terreno.rangos_scan(rala, 3.0, 3.0, 0.0)
+    fa, fn = np.isfinite(antes).mean(), np.isfinite(ahora).mean()
+    print("   haces con lectura: antes %.0f %%  ahora %.0f %%" % (100 * fa, 100 * fn))
+    assert fn > fa + 0.15, "el /scan nuevo tiene que llenar bastantes mas haces"
+    # rellenar no puede inventar pared en una puerta: dos bordes a distinta distancia no se unen
+    rg = np.full(360, np.inf, np.float32)
+    rg[10], rg[13] = 2.0, 4.0
+    assert not np.isfinite(terreno._rellenar_huecos(rg, 3)[11:13]).any()
+    print("   OK")
+
+
+def prueba_alinear():
+    print("== alinearse sin pasarse (perro que responde 0.3 s tarde, como el Go2)")
+    from go2_nav.nucleo import escaleras as ES
+    man = Maniobra(None, dict(config.DEFECTO), lambda t: None)
+
+    def girar(meta, nuevo, retraso):
+        """retraso en pasos de 0.1 s. Devuelve (veces que se paso y volvio, error final, segundos)."""
+        man.m, man.w_ult = {}, 0.0
+        yaw, w_real, cola, cambios, w_prev = 0.0, 0.0, [0.0] * retraso, 0, 0.0
+        for k in range(400):
+            t = k * 0.1
+            err = ES.ang(meta - yaw)
+            if nuevo:
+                listo, cmd = man._girar_a({"ahora": t, "yaw": yaw}, meta, math.radians(3))
+                w = cmd[2]
+            else:                                # lo de antes: gira hasta estar a < 3 grados
+                listo = abs(err) < math.radians(3)
+                w = 0.0 if listo else man._girar(err)[2]
+            man.w_ult = w
+            if w * w_prev < 0:
+                cambios += 1                     # gira hacia el otro lado: se habia pasado
+            if w:
+                w_prev = w
+            cola.append(w)
+            w_real += (cola.pop(0) - w_real) * 0.6     # retraso + inercia
+            yaw += w_real * 0.1
+            if listo and abs(w_real) < 0.02 and k > 5:
+                break
+        return cambios, math.degrees(abs(ES.ang(meta - yaw))), t
+    for retraso in (2, 3, 5):
+        for meta in (math.pi, math.radians(30)):
+            ca, ea, ta = girar(meta, False, retraso)
+            cn, en, tn = girar(meta, True, retraso)
+            print("   retraso %.1f s, giro de %3.0f: antes se paso %2d veces (%2.0f s) | ahora %d veces, "
+                  "error %.1f grados, %2.0f s" % (retraso / 10, math.degrees(meta), ca, ta, cn, en, tn))
+            assert cn == 0 and en < 3.5, "no se puede pasar y volver"
+    print("   OK")
+
+
 def prueba_exploracion():
     print("== exploracion: un cuarto de 4 x 4 con una puerta de 0.8 m")
     v = EX.Vista()
@@ -266,6 +326,10 @@ if __name__ == "__main__":
     if que in ("todo", "exploracion"):
         prueba_exploracion()
         prueba_paredes()
+    if que in ("todo", "scan"):
+        prueba_scan()
+    if que in ("todo", "alinear"):
+        prueba_alinear()
     if que in ("todo", "maniobras"):
         prueba_maniobras()
     if que in ("bajar", "subir"):

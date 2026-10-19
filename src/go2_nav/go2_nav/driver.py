@@ -68,6 +68,12 @@ class Driver(Node):
         # espacio libre en esa direccion, sube a esta velocidad
         self.v_efectiva = p("v_efectiva", 0.20).value
         self.w_efectiva = p("w_efectiva", 0.40).value
+        # giro en el sitio MAS CHICO que esto = "ya casi estoy alineado": se para en vez de subirlo
+        # a w_efectiva. Antes cualquier correccion chica de Nav2 se volvia 0.40 rad/s, el perro se
+        # pasaba de la linea, Nav2 corregia al otro lado y asi sin fin (zigzag)
+        self.w_quieto = p("w_quieto", 0.20).value
+        # la compensacion de giro (go2 calibrar_mov) nunca pide mas de esto x lo que quiere Nav2
+        self.comp_w_max = p("compensacion_giro_max", 1.5).value
         self.holguras = {}
         self.t_holg = 0.0
         # respuesta REAL del perro a las ordenes (go2 calibrar_mov): se compensa
@@ -231,7 +237,8 @@ class Driver(Node):
             k = min(self.vx_max, self.inversa(self.curvas["v"], v)) / v
             vx, vy = vx * k, vy * k
         if abs(wz) >= self.min_w:
-            wz = math.copysign(min(self.wz_max, self.inversa(self.curvas["w"], abs(wz))), wz)
+            w = min(self.inversa(self.curvas["w"], abs(wz)), self.comp_w_max * abs(wz), self.wz_max)
+            wz = math.copysign(w, wz)
         return vx, vy, wz
 
     def efectiva(self, vx, vy, wz):
@@ -253,8 +260,10 @@ class Driver(Node):
                 k = self.v_efectiva / v
                 vx, vy = vx * k, vy * k
                 self.subidas += 1
-        elif v < self.min_v and self.min_w <= abs(wz) < self.w_efectiva:
-            wz = math.copysign(self.w_efectiva, wz)       # giro en el sitio
+        elif v < self.min_v and abs(wz) < self.w_efectiva:
+            # giro en el sitio: una correccion minima se ignora (casi alineado: mejor parar que
+            # pasarse); una correccion real se sube al minimo con el que el Go2 si gira
+            wz = 0.0 if abs(wz) < self.w_quieto else math.copysign(self.w_efectiva, wz)
         return vx, vy, wz
 
     def cb_evita(self, m):
