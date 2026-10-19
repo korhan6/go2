@@ -154,9 +154,14 @@ def manejar(nodo):
                 sys.stdout.flush()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, viejo)
-        for _ in range(5):
-            pub.publish(Twist())
-            time.sleep(0.05)
+        # con Ctrl+C rclpy ya cerro su contexto y no se puede publicar: el driver para solo al
+        # perro si no le llegan ordenes en 0.4 s
+        try:
+            for _ in range(5):
+                pub.publish(Twist())
+                time.sleep(0.05)
+        except Exception:
+            pass
         print("\nlisto. Para navegar: go2 ir A")
     return 0
 
