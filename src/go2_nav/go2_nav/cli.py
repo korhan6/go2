@@ -52,6 +52,8 @@ from std_msgs.msg import String
 
 from go2_nav_interfaces.srv import Comando
 
+from .nucleo.config import en_huella
+
 
 def cam(e):
     V = e.get("vision")
@@ -376,9 +378,8 @@ def costmap(nodo, args):
             a = k * paso - L          # hacia adelante del perro
             b = L - q * paso          # hacia la izquierda
             x, y = x0 + cy * a - sy * b, y0 + sy * a + cy * b
-            if abs(b) <= 0.17 and -0.38 <= a <= 0.46 and (abs(abs(b) - 0.16) < 0.026 or abs(a - 0.45) < 0.026
-                                                           or abs(a + 0.37) < 0.026):
-                fila += "^" if abs(a - 0.45) < 0.026 and abs(b) < 0.03 else "o"
+            if en_huella(a, b, 0.026) and not en_huella(a, b, -0.026):        # el borde de la huella
+                fila += "^" if a > 0.35 and abs(b) < 0.03 else "o"
                 continue
             i, j = int(math.floor((y - oy) / r)), int(math.floor((x - ox) / r))
             v = c.data[i * W + j] if 0 <= i < H and 0 <= j < W else -1

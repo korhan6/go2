@@ -94,10 +94,10 @@ for top in ("/global_costmap/costmap", "/local_costmap/costmap", "/go2/mapa_pare
 def en_huella(x, y, v):
     """(x, y) dentro de la huella de Nav2 del perro en la pose v."""
     import math
+    from go2_nav.nucleo.config import en_huella as dentro
     c, sn = math.cos(v.get("yaw", 0.0)), math.sin(v.get("yaw", 0.0))
     dx, dy = x - v["x"], y - v["y"]
-    fx, fy = c * dx + sn * dy, -sn * dx + c * dy
-    return -0.37 <= fx <= 0.45 and abs(fy) <= 0.16
+    return dentro(c * dx + sn * dy, -sn * dx + c * dy)
 
 
 def ascii_mapa(m, x0=3.9, x1=6.1, y0=3.2, y1=4.9, paso=0.05, pose=None):

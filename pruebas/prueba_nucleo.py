@@ -110,10 +110,15 @@ def prueba_posible():
     print("   OK")
 
 
-def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pared_abajo=None, l1=False):
+def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pared_abajo=None, l1=False,
+           ralo=0, dy=0.0, dyaw=0.0, odom_yaw=0.0, deriva=(0.0, 0.0)):
     """La maniobra completa contra el simulador (como escaleras_nodo.lazo, a 10 Hz).
     pasillo=True: la escalera angosta entre paredes de la casa del usuario (M.escalera_pasillo), con
-    el lidar como el L1 de verdad (l1=True: mas bajo, no ve atras ni huellas mas altas que el)."""
+    el lidar como el L1 de verdad (l1=True: mas bajo, no ve atras ni huellas mas altas que el).
+    ralo: puntos por nube como el L1 (0 = todos). dy, dyaw: perro corrido / torcido respecto de la
+    escalera. odom_yaw: la odometria girada respecto del mundo (la rejilla de voxeles no coincide
+    con la escalera, como en la casa). deriva = (vy, wz) que el perro hace de mas, solo, encima de
+    los escalones (patinadas: el perro real se iba en diagonal)."""
     if pasillo:
         m, borde, primero, y0 = M.escalera_pasillo(pared_abajo), 3.0 + 9 * 0.27, 3.0, 1.425
     else:
@@ -122,7 +127,8 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         x, yaw = borde + terreno.LARGO2 + d_nose, math.pi
     else:
         x, yaw = primero - terreno.LARGO2 - d_nose, 0.0
-    r = M.RobotSim(m, x=x, y=y0, yaw=yaw, ruido_real=True, l1_real=l1 or pasillo)
+    r = M.RobotSim(m, x=x, y=y0 + dy, yaw=yaw + dyaw, ruido_real=True, l1_real=l1 or pasillo,
+                   odom_origen=(0.0, 0.0, odom_yaw))
     if zona_muerta > 0:
         # como el Go2 real: por debajo de zona_muerta m/s pisa en el sitio (avanza un 10 %)
         mover0 = r.mover
@@ -131,8 +137,17 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
             k = 0.1 if math.hypot(vx, vy) < zona_muerta else 1.0
             mover0(vx * k, vy * k, wz)
         r.mover = mover
+    if deriva != (0.0, 0.0):
+        mover1 = r.mover
+
+        def mover_deriva(vx, vy, wz):
+            if r.escaleras and math.hypot(vx, vy) > 0.02:
+                vy, wz = vy + deriva[0], wz + deriva[1]
+            mover1(vx, vy, wz)
+        r.mover = mover_deriva
     cfg = dict(config.DEFECTO)
     det, mem = Detector(), Memoria()
+    desvio = [0.0]
     man = Maniobra(RobotMarcha(r), cfg, (lambda t: print("   %6.1f  %s" % (r.t, t))) if verbose else (lambda t: None))
     suelo, pedido = None, False
     ordenes = {"BAJANDO": [], "SUBIENDO": []}
@@ -141,8 +156,12 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         ahora = r.t
         px, py, pz, yw, pitch, roll, _ = r.pose()
         nuevas = r.nubes_nuevas()
+        crudos = []
         for _t, xyz in nuevas:
             limpio = terreno.corregir_cerca(terreno.quitar_propio(xyz, px, py, pz, yw, suelo), px, py, yw, cfg["sesgo_cerca"])
+            if ralo and len(limpio) > ralo:
+                limpio = limpio[r.rng.random(len(limpio)) < ralo / len(limpio)]
+            crudos.append(limpio)
             mem.sumar(limpio, px, py, ahora)
         if not nuevas:
             mem.sumar(np.zeros((0, 3), np.float32), px, py, ahora)
@@ -151,7 +170,8 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         suelo = (pz - terreno.ALTURA_BASE) if en_esc else terreno.suelo_abs(local, px, py, pz, yw, previo=suelo)
         holg, _ = guardian(local, (px, py, pz, yw), suelo, cfg, rampa=abs(pitch) > math.radians(4))
         if nuevas and len(local):
-            det.actualizar(local, (px, py, pz, yw), suelo, ahora, alrededor=(k % 10 == 0) and not en_esc)
+            det.actualizar(local, (px, py, pz, yw), suelo, ahora, alrededor=(k % 10 == 0) and not en_esc,
+                           crudos=crudos)
         if not pedido:
             c = det.confirmada(tipo, ahora, (px, py))
             if c is not None and c.get("dist", 9) < 2.2:
@@ -166,14 +186,16 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
             vx, vy, wz = man.paso(ahora, (px, py, pz, yw, pitch, roll), det, holg)
             if man.estado in ordenes:
                 ordenes[man.estado].append(vx)
+                if abs(r.z - 0.30) > 0.05 and abs(r.z - 1.83) > 0.05:      # encima de los escalones
+                    desvio[0] = max(desvio[0], abs(r.y - y0))
             r.mover(vx, vy, wz)
             if man.resultado is not None:
                 break
         else:
             raise AssertionError("DETENIDO en la escalera: %s" % man.m.get("motivo_det"))
     res = man.resultado
-    print("   %s: %s | z %.2f -> %.2f | choques %d | %.0f s" % (tipo, res and res["motivo"], 0.3 if tipo == "subir" else 1.83,
-                                                               r.z, r.choques, r.t))
+    print("   %s: %s | z %.2f -> %.2f | choques %d | %.0f s | desvio del centro max %.0f cm" % (
+        tipo, res and res["motivo"], 0.3 if tipo == "subir" else 1.83, r.z, r.choques, r.t, 100 * desvio[0]))
     assert res and res["ok"], res
     assert r.choques == 0
     if tipo == "bajar":
@@ -202,6 +224,28 @@ def prueba_subir_pegado():
         res = correr("subir", d, pasillo=True)
         assert res["ok"], res
     print("   OK")
+
+
+def prueba_variantes(todas=False):
+    print("== escalera angosta: perro corrido / torcido, odometria girada, lidar ralo y perro que patina")
+    casos = [("subir", 0.13, dict(dy=0.08, dyaw=math.radians(8), odom_yaw=0.35, ralo=2500)),
+             ("subir", 0.5, dict(dy=-0.08, dyaw=math.radians(-8), deriva=(0.03, 0.06))),
+             ("bajar", 0.6, dict(dy=0.06, dyaw=math.radians(6), odom_yaw=0.35, ralo=2500)),
+             ("bajar", 0.6, dict(dy=-0.06, deriva=(-0.03, -0.06), pared_abajo=2.3))]
+    if todas:
+        for tipo, d in (("subir", 0.13), ("subir", 0.5), ("bajar", 0.6)):
+            for dy, dyaw in ((0.10, 0.0), (-0.10, 0.0), (0.0, 10.0), (0.05, -10.0)):
+                for der in ((0.0, 0.0), (0.04, -0.08)):
+                    casos.append((tipo, d, dict(dy=dy, dyaw=math.radians(dyaw), deriva=der, odom_yaw=0.35)))
+    malos = []
+    for tipo, d, kw in casos:
+        try:
+            correr(tipo, d, pasillo=True, **kw)
+        except AssertionError as e:
+            malos.append((tipo, d, kw, str(e)[:100]))
+            print("   FALLA %s %.2f %s: %s" % (tipo, d, kw, str(e)[:100]))
+    assert not malos, "%d de %d casos fallaron" % (len(malos), len(casos))
+    print("   OK (%d casos)" % len(casos))
 
 
 def prueba_bajar_pared():
@@ -414,6 +458,8 @@ if __name__ == "__main__":
         prueba_subir_pegado()
     if que in ("todo", "pared"):
         prueba_bajar_pared()
+    if que in ("todo", "variantes", "variantes_todas"):
+        prueba_variantes(todas=(que == "variantes_todas"))
     if que in ("bajar", "subir"):
         correr(que, verbose=True)
     print("LISTO")

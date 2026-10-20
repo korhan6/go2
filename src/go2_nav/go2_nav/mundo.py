@@ -270,9 +270,15 @@ class RobotSim(Robot):
         """Puntos visibles en un radio de 5 m: suelo + paredes, con oclusion."""
         R = 4.0
         # el L1 va en la cabeza: 28 cm adelante y 12 cm arriba del centro del cuerpo
-        sx = self.x + (0.29 if self.l1_real else 0.28) * math.cos(self.yaw)
-        sy = self.y + (0.29 if self.l1_real else 0.28) * math.sin(self.yaw)
-        sz = self.z + (-0.047 if self.l1_real else 0.12)
+        if self.l1_real:
+            # la cabeza sube/baja con el cuerpo inclinado (pitch < 0 = hocico arriba en este simulador)
+            a = -self.pitch
+            fx_s, z_s = 0.29 * math.cos(a) + 0.047 * math.sin(a), 0.29 * math.sin(a) - 0.047 * math.cos(a)
+        else:
+            fx_s, z_s = 0.28, 0.12
+        sx = self.x + fx_s * math.cos(self.yaw)
+        sy = self.y + fx_s * math.sin(self.yaw)
+        sz = self.z + z_s
         j0, j1 = max(0, int((sx - R) / RES)), min(self.m.W, int((sx + R) / RES))
         i0, i1 = max(0, int((sy - R) / RES)), min(self.m.H, int((sy + R) / RES))
         ii, jj = np.mgrid[i0:i1, j0:j1]
@@ -367,10 +373,13 @@ class RobotSim(Robot):
     def _terminar(self, xyz, sx, sy, sz):
         if self.l1_real and len(xyz):
             # campo de vision del L1 (boca abajo, inclinado 15 grados) y el cuerpo tapando atras
+            # (en el marco del cuerpo: inclinado en la escalera, el campo de vision se inclina con el)
             c, s = math.cos(self.yaw), math.sin(self.yaw)
             dx = c * (xyz[:, 0] - sx) + s * (xyz[:, 1] - sy)
             dy = -s * (xyz[:, 0] - sx) + c * (xyz[:, 1] - sy)
             dz = xyz[:, 2] - sz
+            a = -self.pitch
+            dx, dz = dx * math.cos(a) + dz * math.sin(a), -dx * math.sin(a) + dz * math.cos(a)
             ok = (dz <= 0.27 * dx) & ~((dx < 0.05) & (np.abs(dy) < 0.30))
             xyz = xyz[ok]
         xyz += self.rng.normal(0, 0.01, xyz.shape).astype(np.float32)

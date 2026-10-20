@@ -455,13 +455,13 @@ class Gestor(Node):
             return 1.5 if v is None else v          # nada visto = libre
         L = {k: h(k) for k in ("adelante", "izq", "der")}
         if L["adelante"] >= 0.45:
-            acc, v, clave, dur = "adelante", (0.15, 0.0), "adelante", 2.0
+            acc, v, clave, dur = "adelante", (0.22, 0.0), "adelante", 1.6
         elif max(L["izq"], L["der"]) >= 0.30:
             lado = "izq" if L["izq"] >= L["der"] else "der"
-            acc, v, clave, dur = "de lado (%s)" % lado, (0.0, 0.15 if lado == "izq" else -0.15), lado, 1.6
+            acc, v, clave, dur = "de lado (%s)" % lado, (0.0, 0.22 if lado == "izq" else -0.22), lado, 1.2
         else:
             # el L1 no ve atras: despacio, y por donde vino (normalmente esta libre)
-            acc, v, clave, dur = "atras", (-0.10, 0.0), None, 1.5
+            acc, v, clave, dur = "atras", (-0.20, 0.0), None, 1.0
         self.log("escape: %s" % acc)
         t0 = time.monotonic()
         while time.monotonic() - t0 < dur and self.modo in NAVEGANDO:
@@ -1261,6 +1261,10 @@ class Gestor(Node):
             txt += "lo que ve delante (cm sobre el suelo, cada 10 cm desde el hocico): %s\n" % E["perfil"]
         if E.get("alto_cuerpo") is not None:
             txt += "suelo estimado a %.0f cm bajo el cuerpo (normal ~30)\n" % (100 * E["alto_cuerpo"])
+        R = E.get("rumbo_escalera")
+        if R:
+            txt += ("escalera delante: va %+.1f grados respecto del perro, su centro a %+d cm "
+                    "(%d paredes, %d contrahuellas)\n" % (R["grados"], R["centro_cm"], R["paredes"], R["contrahuellas"]))
         txt += "para tomar la que tiene DELANTE ahora: go2 subir | go2 bajar\n"
         txt += "\n".join(lista + cand) or "(ninguna confirmada)"
         if self.descartadas:

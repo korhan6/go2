@@ -39,7 +39,7 @@ CARRIL = 0.10
 LAT = 0.70
 X0, X1, PASO = 0.15, 2.20, 0.05
 HUECO = 5              # franjas seguidas sin suelo (25 cm) para llamarlo borde
-RAMPA_MAX = 0.40       # m de caida por m de avance: mas suave que esto es rampa, no escalera
+RAMPA_MAX = 0.30       # m de caida por m de avance (17 grados): mas suave que esto es rampa, no escalera
 RES_ANCHO = 0.05       # m: el ancho de una escalera se mide en franjas de 10 cm (+-5 cm)
 
 
@@ -239,7 +239,14 @@ def holguras(fx, fy, h, largo=1.2, margen=0.06, obst_min=OBST_MIN, rampa=False):
     r = np.hypot(fx, fy)
     dentro = (np.abs(fx) < LARGO2 + PROPIO) & (np.abs(fy) < ANCHO2 + PROPIO)
     # 4 puntos (no 2): un par de pixeles sueltos no impiden girar
-    out["giro"] = _kmin(r[obst & ~dentro & (r < 0.50)], k=4)
+    cerca = obst & ~dentro & (r < 0.50)
+    out["giro"] = _kmin(r[cerca], k=4)
+    # hacia donde esta lo que estorba para girar (rad, marco del perro; None = nada)
+    if np.count_nonzero(cerca) >= 4:
+        k = np.argsort(r[cerca])[:8]
+        out["giro_dir"] = float(math.atan2(np.mean(fy[cerca][k]), np.mean(fx[cerca][k])))
+    else:
+        out["giro_dir"] = None
     return out
 
 
@@ -310,7 +317,8 @@ class Rejilla(object):
                 i += 1
                 continue
             fin = min(nb, i + HUECO)
-            if vio_suelo >= 2 and fin - i == HUECO and not piso[i:fin].any() and not alto[i:fin].any():
+            # (con 1 franja de suelo basta: pegado al borde la cabeza tapa el suelo de delante)
+            if vio_suelo >= 1 and fin - i == HUECO and not piso[i:fin].any() and not alto[i:fin].any():
                 if bajo[i:min(nb, i + 24)].any():      # se ve algo mas abajo en los siguientes 1.2 m
                     return ("caida", i)
                 # hueco sin nada debajo: borde dudoso (alfombra negra, vidrio, fuera de alcance)
@@ -336,10 +344,10 @@ class Rejilla(object):
 def analizar_bajada(fx, fy, h):
     """Busca una escalera hacia abajo delante del perro.
 
-    USO DENTRO DE LA CASA: todo desnivel EMPINADO de borde RECTO es una escalera de bajada (no hay
-    balcones). Ya no hace falta ver el primer escalon (de lejos queda en la sombra del lidar y no
-    se confirmaba nunca). Lo que sigue sin ser escalera: una rampa suave, y un borde que no es
-    recto (sombras, objetos sueltos).
+    USO DENTRO DE LA CASA: CUALQUIER bajada es una escalera (no hay balcones ni barrancos). No hace
+    falta ver el primer escalon (de lejos queda en la sombra del lidar), ni que el borde sea recto
+    (escaleras curvas o en abanico), y basta con que baje en 2 de los 4 carriles del centro. Lo
+    unico que no cuenta: una rampa muy suave (se camina normal).
 
     Devuelve (deteccion | None, estado_centro, motivo).
       deteccion: dict(bx, by, dist, ang, centro, ancho, prof, abierta, huella)
@@ -360,26 +368,35 @@ def analizar_bajada(fx, fy, h):
     tipos = [estados[k][0] for k in medio]
     estado_centro = max(set(tipos), key=tipos.count)
     bajan = [k for k in medio if estados[k][0] == "caida"]
-    # 3 de los 4 carriles del centro (un cable, una sombra o una pata de la baranda no la tapan)
-    if len(bajan) < len(medio) - 1:
+    # 2 de los 4 carriles del centro (un cable, una sombra o una pata de la baranda no la tapan)
+    if len(bajan) < len(medio) - 2:
         return None, estado_centro, {"suelo": "delante hay suelo", "pared": "algo delante",
                                      "nada": "no veo el suelo delante (muy pegado al borde o mirando al vacio)",
                                      "caida": "baja solo en %d de %d carriles del centro: ponlo de frente "
                                               "y centrado" % (len(bajan), len(medio))}.get(
             estado_centro, "delante: " + estado_centro)
-    # ensancha desde el centro mientras los carriles tambien bajen (tolera 1 carril sin ver)
+    # ensancha desde el centro mientras los carriles tambien bajen (tolera 1 carril sin ver, pero no
+    # salta una PARED: del otro lado de la pared de la escalera solo hay reflejos del piso)
     k0, k1 = min(bajan), max(bajan)
-    while k0 > 0 and (estados[k0 - 1][0] == "caida" or (k0 > 1 and estados[k0 - 2][0] == "caida")):
-        k0 -= 1 if estados[k0 - 1][0] == "caida" else 2
-    while k1 < nl - 1 and (estados[k1 + 1][0] == "caida" or (k1 < nl - 2 and estados[k1 + 2][0] == "caida")):
-        k1 += 1 if estados[k1 + 1][0] == "caida" else 2
+
+    def baja(k):
+        return estados[k][0] == "caida"
+
+    def salta(k):
+        return estados[k][0] != "pared"
+
+    while k0 > 0 and (baja(k0 - 1) or (k0 > 1 and salta(k0 - 1) and baja(k0 - 2))):
+        k0 -= 1 if baja(k0 - 1) else 2
+    while k1 < nl - 1 and (baja(k1 + 1) or (k1 < nl - 2 and salta(k1 + 1) and baja(k1 + 2))):
+        k1 += 1 if baja(k1 + 1) else 2
     ks = np.array([k for k in range(k0, k1 + 1) if estados[k][0] == "caida"])
     lat = rj.centros[ks]
     borde = np.array([X0 + estados[k][1] * PASO for k in ks])
-    b, a = np.polyfit(lat, borde, 1)          # borde(lat) = a + b * lat
-    resid = borde - (a + b * lat)
-    if float(np.std(resid)) > 0.07 or abs(b) > 1.2:   # no es una linea recta: sombra, objetos
-        return None, estado_centro, "el borde de la bajada no es recto (sombra u objetos)"
+    # el borde: la recta que pasa por mas carriles (una escalera curva o un carril raro no la tuercen)
+    en = _recta_robusta(lat, borde, tol=0.10) if len(ks) >= 3 else np.ones(len(ks), bool)
+    b, a = np.polyfit(lat[en], borde[en], 1) if np.count_nonzero(en) >= 2 else (0.0, float(np.median(borde)))
+    if abs(b) > 2.0:                          # mas de 63 grados de costado: no es lo que tiene delante
+        return None, estado_centro, "la bajada esta muy de costado: ponlo de frente"
     prof, niveles = [], []
     empinados = 0
     for k in ks:
@@ -396,8 +413,8 @@ def analizar_bajada(fx, fy, h):
         n = rj.huella(k, i)
         if n is not None:
             niveles.append(n)
-    if len(prof) < 2 or empinados < max(2, len(ks) // 2):
-        return None, estado_centro, "baja suave: rampa o desnivel chico, no escalera"
+    if not prof or empinados < 1:
+        return None, estado_centro, "baja muy suave (rampa): se camina normal, no es escalera"
     norma = math.sqrt(1.0 + b * b)
     c = float(0.5 * (rj.centros[k0] + rj.centros[k1]))
     det = {
@@ -500,6 +517,97 @@ def analizar_subida(fx, fy, h):
     return {"bx": float(a + b * c), "by": c, "dist": float(a / norma),
             "ang": float(math.atan2(-b, 1.0)), "ancho": float(lats[-1] - lats[0] + 0.10),
             "abierta": bool(abs(lats[0]) > 0.39 or abs(lats[-1]) > 0.39)}
+
+
+ANG_ESC = np.radians(np.arange(-25.0, 25.01, 0.5))
+
+
+def orientacion_escalera(xyz, x, y, yaw, suelo, celda=0.05, bin_u=0.03):
+    """Rumbo y centro de la escalera que el perro tiene DELANTE subiendo (en la bajada en reversa
+    tambien: el perro mira escalera arriba). Sirve para ir derecho y centrado encima de los
+    escalones (antes el rumbo salia solo del primer borde, medido en celdas de 5 cm, y un par de
+    grados de error lo llevaban en diagonal contra una pared).
+
+    xyz: puntos CRUDOS recientes (odom), no los voxeles de la memoria: los centros de voxel caen en
+    una rejilla y el angulo "ganador" era el de la rejilla, no el de la escalera.
+    Usa lo VERTICAL que hay delante (columnas de 5 cm donde las alturas cubren >= 8 cm, cada una en
+    el promedio de sus puntos): las contrahuellas son rectas perpendiculares a la escalera y las
+    paredes/barandas, paralelas. Se prueba cada angulo (+-25 grados, cada 0.5) y gana el que mas
+    "apila" esas columnas en rectas (perfil de proyeccion: suma de cuadrados por franja de 3 cm).
+
+    Devuelve dict(ang, centro, ancho, contras, paredes, frente) o None:
+      ang     rumbo escalera-arriba respecto del frente del perro (rad, + = izquierda)
+      centro  centro de la escalera respecto del perro, de lado (m, + = izquierda)
+      ancho   ancho entre paredes (o de las contrahuellas si no hay paredes)
+    """
+    if len(xyz) < 20:
+        return None
+    c, s_ = math.cos(yaw), math.sin(yaw)
+    fx = c * (xyz[:, 0] - x) + s_ * (xyz[:, 1] - y)
+    fy = -s_ * (xyz[:, 0] - x) + c * (xyz[:, 1] - y)
+    hz = xyz[:, 2] - suelo
+    m = (fx > LARGO2 - 0.10) & (fx < 2.0) & (np.abs(fy) < 0.8) & (hz > -0.8) & (hz < 1.5)
+    fx, fy, hz = fx[m], fy[m], hz[m]
+    if len(fx) < 20:
+        return None
+    k = np.floor(np.c_[fx, fy] / celda).astype(np.int64) + (1 << 20)
+    col = (k[:, 0] << 21) + k[:, 1]
+    u, inv, cnt = np.unique(col, return_inverse=True, return_counts=True)
+    alto = np.full(len(u), -np.inf)
+    bajo = np.full(len(u), np.inf)
+    np.maximum.at(alto, inv, hz)
+    np.minimum.at(bajo, inv, hz)
+    # vertical DE VERDAD: >= 3 alturas distintas (franjas de 3 cm), no 2 puntos sueltos (ruido,
+    # reflejos) que caen en la misma columna
+    nh = np.bincount(np.unique(inv * 64 + np.clip(((hz + 0.8) / 0.03).astype(np.int64), 0, 63)) // 64,
+                     minlength=len(u))
+    vert = ((alto - bajo) >= 0.08) & (nh >= 3)
+    if np.count_nonzero(vert) < 8:
+        return None
+    sx = np.bincount(inv, weights=fx)[vert] / cnt[vert]
+    sy = np.bincount(inv, weights=fy)[vert] / cnt[vert]
+    mejor = None
+    for th in ANG_ESC:
+        ct, st = math.cos(th), math.sin(th)
+        pu = sx * ct + sy * st                       # a lo largo de la escalera
+        pv = -sx * st + sy * ct                      # de lado
+        nu = np.bincount(np.floor((pu + 3.0) / bin_u).astype(np.int64)).astype(np.float64)
+        nv = np.bincount(np.floor((pv + 3.0) / bin_u).astype(np.int64)).astype(np.float64)
+        # (franjas vecinas sumadas: una recta que cae justo entre dos franjas cuenta igual)
+        sc = float(np.sum((nu + np.r_[nu[1:], 0.0]) ** 2) + np.sum((nv + np.r_[nv[1:], 0.0]) ** 2))
+        if mejor is None or sc > mejor[0]:
+            mejor = (sc, th, pu, pv)
+    _sc, th, pu, pv = mejor
+    # contrahuellas: franjas de u con >= 4 columnas a lo ancho; paredes: rectas a lo largo (>= 6
+    # columnas en la misma franja de v que cubren >= 30 cm hacia adelante), a los costados
+    bu = np.floor((pu + 3.0) / bin_u).astype(np.int64)
+    contra = np.isin(bu, np.flatnonzero(np.bincount(bu) >= 4))
+    bv = np.floor((pv + 3.0) / bin_u).astype(np.int64)
+    paredes = []
+    for b in np.flatnonzero(np.bincount(bv[~contra]) >= 6) if np.any(~contra) else []:
+        e = (bv == b) & ~contra
+        if np.ptp(pu[e]) >= 0.30 and abs(float(np.mean(pv[e]))) > ANCHO2:
+            paredes.append(float(np.mean(pv[e])))
+    izq = [v for v in paredes if v > 0]
+    der = [v for v in paredes if v < 0]
+    if izq and der:
+        vi, vd = min(izq), max(der)
+        centro, ancho, n_par = 0.5 * (vi + vd), vi - vd, 2
+    elif np.count_nonzero(contra) >= 6:
+        v = pv[contra]
+        lo, hi = float(np.percentile(v, 5)), float(np.percentile(v, 95))
+        if izq:
+            hi = min(hi, min(izq))
+        if der:
+            lo = max(lo, max(der))
+        centro, ancho, n_par = 0.5 * (lo + hi), hi - lo, int(bool(izq or der))
+    else:
+        return None
+    adelante = pu[contra & (pu > 0.0)]
+    return {"ang": float(th), "centro": centro, "ancho": ancho,
+            "contras": int(np.count_nonzero(np.bincount(bu) >= 4)), "paredes": n_par,
+            # la contrahuella mas cercana delante (m desde el centro del perro; inf = ninguna)
+            "frente": float(np.min(adelante)) if adelante.size else math.inf}
 
 
 # ---------------------------------------------------------------- escaneo 2D para el SLAM

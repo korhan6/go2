@@ -128,10 +128,12 @@ class Escaleras(Node):
         ahora = time.monotonic()
         x, y, z, yaw, pitch, roll = self.pose
         nuevas, self.nubes = self.nubes, []
+        limpios = []
         for xyz in nuevas:
             limpio = terreno.quitar_propio(xyz, x, y, z, yaw, self.suelo)
             limpio = terreno.corregir_cerca(limpio, x, y, yaw, self.cfg["sesgo_cerca"])
             self.memoria.sumar(limpio, x, y, ahora)
+            limpios.append(limpio)
         if not nuevas:
             self.memoria.sumar(np.zeros((0, 3), np.float32), x, y, ahora)
         local = self.memoria.puntos()
@@ -147,7 +149,7 @@ class Escaleras(Node):
             alrededor = not en_escalera and ahora - self.t_alrededor > 1.0
             if alrededor:
                 self.t_alrededor = ahora
-            self.detector.actualizar(local, (x, y, z, yaw), self.suelo, ahora, alrededor=alrededor)
+            self.detector.actualizar(local, (x, y, z, yaw), self.suelo, ahora, alrededor=alrededor, crudos=limpios)
 
         if self.espera is not None:
             self.acercarse(ahora)
@@ -304,6 +306,12 @@ class Escaleras(Node):
                "delante": self.detector.centro, "diagnostico": self.detector.motivo,
                "diagnostico_subida": self.detector.motivo_subida,
                "perfil": self.detector.perfil,
+               # la escalera que ve delante: hacia donde va (grados respecto del perro) y su centro
+               "rumbo_escalera": None if (self.detector.orient is None or ahora - self.detector.orient["t"] > 1.0) else
+               {"grados": round(math.degrees(self.detector.orient["ang"]), 1),
+                "centro_cm": round(100 * self.detector.orient["centro"]),
+                "paredes": self.detector.orient["paredes"], "contrahuellas": self.detector.orient["contras"]},
+               "corrido_cm": None if "error_lateral" not in m.m else round(-100 * m.m["error_lateral"]),
                "alto_cuerpo": None if self.detector.alto_cuerpo is None else round(self.detector.alto_cuerpo, 3),
                "en_escalera": bool(m.en_escalera(self.pose[4] if self.pose else 0.0)),
                "detenido": m.estado == "DETENIDO", "motivo_detenido": m.m.get("motivo_det", ""),

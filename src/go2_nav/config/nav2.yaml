@@ -1,14 +1,19 @@
 # Nav2 para el Unitree Go2 (ROS 2 Jazzy/Humble). Base: nav2_bringup/params/nav2_params.yaml (Jazzy)
 #
-# Cuerpo del Go2: 0.70 x 0.31 m. Huella:
-#   - a los LADOS: el cuerpo exacto (+-0.16 m)
-#   - ATRAS: el cuerpo exacto (-0.37 m)
-#   - ADELANTE: +9 cm de margen (0.45 m; el hocico esta a 0.36 m)
-#   - y footprint_padding 0.07 en el costmap LOCAL (el que usa el controlador): con el L1 (ralo) la arista de un marco de
-#     puerta queda a veces sin marcar (los rayos rasantes que pasan por la puerta borran esa
-#     celda) y sin margen la esquina del perro la enganchaba al girar saliendo de la puerta.
-#     Medido con Nav2 real (pruebas/prueba_puerta.py, puerta de 72 cm, meta directa, 6 veces):
-#     margen 0 -> 2 de 6 sin chocar; 0.05 -> 5 de 6; 0.07 -> 6 de 6, y pasa igual de rapido.
+# Cuerpo del Go2: 0.70 x 0.31 m. Huella (nucleo/config.HUELLA):
+#   - a los LADOS: el cuerpo exacto (+-0.16 m, las patas)
+#   - ATRAS: el cuerpo exacto (-0.37 m), esquinas enteras (recortarlas: la esquina trasera rozaba
+#     el marco de la puerta al girar dentro de ella, 3 de 6 sin chocar en vez de 6 de 6)
+#   - ADELANTE: la cabeza, mas angosta que el cuerpo: hasta 0.40 m (el hocico esta a 0.36) y +-0.10
+#     de ancho. Antes era un rectangulo hasta 0.45 m de punta a punta: con el margen, para girar en
+#     el sitio pedia 57 cm libres alrededor y en un pasillo de 1 m "no cabia". Ahora pide ~48 cm.
+#   - y footprint_padding 0.07 en el costmap LOCAL (el que usa el controlador): con el L1 (ralo) la
+#     arista de un marco de puerta queda a veces sin marcar (los rayos rasantes que pasan por la
+#     puerta borran esa celda) y sin margen la esquina del perro la enganchaba al girar saliendo de
+#     la puerta (pruebas/prueba_puerta.py, puerta de 72 cm, meta directa: margen 0 -> 2 de 6 sin
+#     chocar; 0.05 -> 5 de 6; 0.07 -> 6 de 6).
+# collision_monitor = SOLO emergencias: el cuerpo exacto + 2 cm y 0.5 s antes del choque. Lo que se
+# ve de lejos lo esquiva el MPPI (con el margen), no lo frena el monitor.
 # El perro camina de lado y gira en el sitio: controlador MPPI con modelo "Omni" (vx, vy, wz).
 # Asi, si no cabe girando, se desliza de lado o retrocede en vez de quedarse "sin espacio".
 
@@ -175,7 +180,7 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
+      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
       footprint_padding: 0.07          # ver arriba
       # SOLO lo que ve el lidar (sin las paredes del SLAM): el obstacle_layer se borra bajo la
       # huella del perro; una capa estatica no, y pegado a un marco la huella misma quedaba "en
@@ -207,9 +212,9 @@ local_costmap:
         # inflado corto y que cae rapido: prefiere ir por el centro, pero CABE donde cabe el cuerpo
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 10.0
-        # >= radio que circunscribe la huella CON el margen (0.57 m): si no, Nav2 no puede usar
+        # >= radio que circunscribe la huella CON el margen (0.50 m): si no, Nav2 no puede usar
         # el inflado para saber cuando revisar la huella completa (avisaba en cada ciclo)
-        inflation_radius: 0.60
+        inflation_radius: 0.55
       always_send_full_costmap: True
 
 global_costmap:
@@ -219,7 +224,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
+      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
       footprint_padding: 0.0           # el planificador usa la huella real (el margen va en el local)
       resolution: 0.05
       # ventana de 40 x 40 m que sigue al perro: el mapa de SLAM crece mientras explora y las
@@ -321,7 +326,9 @@ velocity_smoother:
 
 collision_monitor:
   ros__parameters:
-    # ultima barrera antes del perro: frena si la orden lo llevaria a chocar (huella exacta)
+    # ultima barrera antes del perro, SOLO para emergencias: frena si la orden lo llevaria a chocar
+    # con el CUERPO (huella exacta + 2 cm, sin el margen del costmap) en menos de 0.5 s. Antes usaba
+    # la huella con margen y 0.8 s: frenaba al pasar al lado de algo que el MPPI ya estaba esquivando
     base_frame_id: "base_link"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
@@ -335,18 +342,18 @@ collision_monitor:
     Huella:
       type: "polygon"
       action_type: "approach"
-      footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 0.8
+      points: "[[0.42, 0.11], [0.32, 0.18], [-0.39, 0.18], [-0.39, -0.18], [0.32, -0.18], [0.42, -0.11]]"
+      time_before_collision: 0.5
       simulation_time_step: 0.05
       min_points: 4
       visualize: False
       enabled: True
     Frente:
-      # zona delante del hocico: ahi va mas despacio (a los lados no: cuerpo exacto)
+      # justo delante del hocico (20 cm): ahi va un poco mas despacio (antes 39 cm y a la mitad)
       type: "polygon"
       action_type: "slowdown"
-      points: "[[0.75, 0.17], [0.75, -0.17], [0.37, -0.17], [0.37, 0.17]]"
-      slowdown_ratio: 0.5
+      points: "[[0.60, 0.16], [0.60, -0.16], [0.40, -0.16], [0.40, 0.16]]"
+      slowdown_ratio: 0.7
       min_points: 4
       visualize: True
       polygon_pub_topic: "zona_frente"

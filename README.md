@@ -19,16 +19,19 @@ es de milisegundos.
 | `go2_vision` | [YOLOv8](https://github.com/ultralytics/ultralytics) entrenado con Open Images V7 (600 clases) | la **cámara del perro** por el cable, YOLO en la **GPU** de la laptop: ve escaleras, personas, sillas, puertas... y las ubica en el mapa con la distancia del lidar |
 
 ### La huella (obstacle avoidance)
-- **Margen de 7 cm alrededor de toda la huella** (`footprint_padding`): sin él, al salir de una
-  puerta girando, la esquina trasera enganchaba el marco (medido con Nav2 real: ver "Si algo
-  falla"). El perro pasa por puertas de 70 cm y pasillos de 60 cm.
-- **Lados:** el cuerpo exacto (±16 cm) + el margen.
-- **Atrás:** exacto.
-- **Adelante:** +9 cm de margen, más una zona de 38 cm delante del hocico donde va a la mitad de
-  velocidad.
-- El controlador revisa la **huella rectangular** completa en cada trayectoria, no un círculo.
-  Por eso pasa por donde cabe el cuerpo. Si no cabe girando en el sitio, se desliza de lado o
-  retrocede.
+- **Adelante, la cabeza (más angosta)**, no un rectángulo: hasta 40 cm del centro y ±10 cm de ancho.
+  Antes el frente era un rectángulo hasta 45 cm: para girar en el sitio pedía 57 cm libres
+  alrededor y en un pasillo de 1 m decía que no cabía. Ahora pide ~50 cm.
+- **Lados y atrás:** el cuerpo exacto (±16 cm, -37 cm), con las esquinas enteras (recortar las de
+  atrás hacía que rozara el marco al girar dentro de una puerta).
+- **Margen de 7 cm alrededor** (`footprint_padding`) para el controlador: sin él, al salir de una
+  puerta girando, la esquina enganchaba el marco. El perro pasa por puertas de 70 cm.
+- **El freno (collision_monitor) es solo para emergencias:** frena si la orden lo llevaría a tocar
+  el CUERPO (+2 cm) en menos de 0.5 s. Lo que el lidar ve de lejos lo **esquiva** el controlador
+  (pasa por al lado con el margen); antes el freno usaba la huella con margen y 0.8 s, y frenaba
+  al pasar junto a algo que ya estaba esquivando. Justo delante del hocico (20 cm) va al 70 %.
+- El controlador revisa la **huella completa** en cada trayectoria, no un círculo. Por eso pasa
+  por donde cabe el cuerpo. Si no cabe girando en el sitio, se desliza de lado o retrocede.
 
 ## Instalar (una vez, en la laptop)
 ```
@@ -151,6 +154,10 @@ morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 | **Casa 14 × 10 m con entrepiso de 1.53 m, `go2 explorar` solo** | mapea la planta baja (128 m²), ve la escalera y NO dice "completo"; **sube de frente**, mapea arriba, **gira 180° y baja en reversa**, recarga el mapa de abajo y vuelve al inicio. 9 min, 0 choques |
 | Subir y bajar a mano (`go2 subir`, `go2 bajar`) | sube 1.53 m de frente; arriba gira 180° y baja de reversa hasta abajo |
 | Escalera **angosta entre paredes** (85 cm) con el lidar como el L1 de verdad (`prueba_nucleo.py pegado` y `pared`; con ROS, `prueba_escalera_angosta.py`) | sube con el hocico a 13 cm del primer escalón (también corrido 8 cm o torcido 8°); baja de reversa y para al quedar plano con una pared 70 cm detrás del pie: la cola queda a 12 cm (antes chocaba) |
+| Escalera angosta, **28 casos difíciles** (corrido ±10 cm, torcido ±10°, odometría girada, lidar ralo, perro que patina de lado y gira solo) (`prueba_nucleo.py variantes_todas`) | 28 de 28 sin choques, se aparta del centro 4 cm en promedio (antes: 25 de 28, 7 cm, hasta 26 cm) |
+| Rumbo inicial mal medido ±7° | lo corrige con lo que ve delante: se aparta ≤ 4 cm (antes hasta 9 cm) |
+| Puerta de 72 cm con el frente de la huella más chico (`prueba_puerta.py 150 2500 meta`, 6 veces) | 6 de 6 sin chocar, en 10–12 s |
+| Caja de 60 cm en el medio del camino (`prueba_obstaculo.py`, 3 veces) | la rodea y llega en 11–12 s, sin chocar ni frenar |
 | `guardar A` → explorar → `ir A` | llega a 3 cm de A |
 | `calibrar` con fantasmas pegados al cuerpo | adelante 0.17 → 3.06 m; luego explora normal |
 | Tu grabación real (18-oct) por el limpiador | lados limpios, 0 caídas falsas con 19 % de reflejos, 3 ms por nube |
@@ -182,27 +189,27 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
   defecto) termina el piso, va a la escalera y la toma; mapea el otro piso y vuelve.
 - **Subida: SIEMPRE de frente.** Se alinea, se centra, se acerca a 45 cm del primer escalón, pone
   la marcha de escaleras y sube.
-- **Bajada automática, aunque la vea de lejos.** De lejos el primer escalón queda en la sombra
-  del lidar y una bajada se ve solo como "una caída". La exploración nunca se acerca sola a una
-  caída (es obstáculo en el costmap), así que la caída queda como **posible bajada** (portal
-  "por confirmar") y, como cualquier escalera pendiente, el perro **va a mirarla de cerca**:
-  al terminar el piso con `al_final`, o enseguida con `inmediato`. Si de cerca ve el escalón,
-  baja. Si no, era un balcón: lo intenta 2 veces y no vuelve.
+- **Cualquier bajada es una escalera** (dentro de la casa no hay barrancos ni balcones): basta con
+  que el piso se corte hacia abajo en 2 de los 4 carriles del centro, sin importar si el borde es
+  recto (escaleras curvas o en abanico) ni si se ve el primer escalón. La confirma desde ~5 cm hasta
+  ~1.5 m del borde. Solo una rampa muy suave (menos de 17°) no cuenta: esa se camina normal.
 - **Bajada: SIEMPRE en reversa.**
-  1. se acerca al borde despacio hasta que el lidar **ve el primer escalón** (con el hocico a
-     25–55 cm del borde; ver abajo por qué);
-  2. se alinea y se centra, y se pone a 65 cm del borde;
-  3. **gira 180°**, comprueba por odometría que el borde quedó detrás (y que detrás no hay suelo
-     firme ni una pared, si el lidar llega a ver), pone la marcha y **baja de espaldas**;
-  4. abajo, **apenas el cuerpo vuelve a quedar plano** (las 4 patas en el piso: lo dice el IMU),
-     frena en seco y no da ni un paso más de reversa (atrás el lidar no ve nada). Quita la marcha
-     y, si hay espacio, se vuelve a poner de frente.
+  1. se alinea con la escalera y se centra (rumbo fino con las paredes y los escalones: ±1–2°),
+     y se pone a 65 cm del borde;
+  2. **gira 180°**. Si no cabe girando (necesita 35 cm libres desde el centro), primero se corre
+     hasta 30 cm alejándose de lo que estorba (nunca hacia la bajada) y vuelve a probar;
+  3. comprueba por odometría que el borde quedó detrás, pone la marcha y **baja de espaldas**;
+  4. abajo, **apenas el cuerpo vuelve a quedar plano o casi** (las 4 patas en el piso: lo dice el
+     IMU), frena en seco y dice **`LLEGUE ABAJO`**. No da ni un paso más de reversa (atrás el lidar
+     no ve nada) y se queda mirando la escalera: no gira ahí, porque el primer escalón queda pegado
+     delante y girando lo pisaría.
+- **Derecho y centrado encima de los escalones** (subiendo y bajando): el lidar mide delante el
+  rumbo de la escalera con las contrahuellas y las paredes, y el perro sigue la línea del centro
+  de la escalera con la odometría (así se corrige aunque patine o al principio de la bajada, cuando
+  la escalera todavía queda detrás). Con paredes a los dos lados, se centra entre ellas.
 - **Seguridad:**
-  - **solo para dentro de la casa:** todo desnivel empinado de borde recto se toma como escalera
-    de bajada (no hace falta ver el primer escalón; no hay balcones). Una rampa suave no es escalera;
-  - si pasó el borde y no bajó nada, se detiene;
-  - encima de los escalones se **centra entre las paredes/barandas** (antes tomaba los escalones
-    de al lado por "pared" y en una escalera angosta se iba de a poco contra una pared);
+  - **solo para dentro de la casa:** cualquier bajada se toma como escalera (ver arriba);
+  - si pasó el borde y no bajó nada, se detiene; si recorrió 6 m y no terminó, también;
   - antes de pisar los escalones, cualquier duda = cancela;
   - ya encima de los escalones nunca cambia de marcha: si algo falla queda **DETENIDO** y
     espera `go2 seguir` o el control remoto.
@@ -249,8 +256,9 @@ go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'f
    Una posible bajada tiene 2 intentos y después queda como `(balcon/desnivel)`.
 5. **`el perro no avanza en la escalera`** → la marcha FreeWalk no se puso o el perro no camina
    a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2`.
-6. **`no hay espacio para girar junto a la escalera`** → necesita 38 cm libres alrededor para
-   girar 180° a 65 cm del borde: pasillos de menos de 80 cm no.
+6. **`no hay espacio para girar junto a la escalera (X cm libres, hacen falta 35)`** → ya se corrió
+   hasta 30 cm buscando lugar y no lo encontró: pasillos de menos de ~75 cm no. Si tu perro sí cabe,
+   `ros2 param set /go2_escaleras radio_giro 0.32`.
 
 ### Si el perro no avanza (pisa en el sitio)
 El Go2 casi no camina por debajo de ~0.20 m/s. Si avanza menos del 40 % de lo que se le pide, la
@@ -311,6 +319,8 @@ python3 pruebas/prueba_nucleo.py           # deteccion de bajadas por distancia,
                                            # subir y bajar en el simulador, fronteras
 python3 pruebas/prueba_nucleo.py bajar     # la bajada en reversa paso a paso
 python3 pruebas/prueba_escalera_angosta.py # con ROS: la escalera angosta de la casa (subir y bajar)
+python3 pruebas/prueba_nucleo.py variantes_todas   # 28 subidas/bajadas dificiles en la escalera angosta (~30 min)
+python3 pruebas/prueba_obstaculo.py        # con ROS: una caja en el camino, la tiene que rodear
 ```
 Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanzan todo con ROS 2.
 

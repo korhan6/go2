@@ -3,9 +3,15 @@
 SUBIR (de frente):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> ACERCAR -> MARCHA_ON -> SUBIENDO
                     -> SALIR -> MARCHA_OFF -> LISTO
 BAJAR (SIEMPRE en reversa):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> DISTANCIA -> GIRAR 180
-                    -> VERIFICAR -> MARCHA_ON -> BAJANDO (de reversa) -> MARCHA_OFF
-                    -> GIRAR_FRENTE -> LISTO
-                    (BAJANDO para en seco cuando el cuerpo vuelve a quedar plano: sin SALIR)
+                    (-> ESPACIO si no cabe girando: se aleja de lo que estorba y vuelve a GIRAR)
+                    -> VERIFICAR -> MARCHA_ON -> BAJANDO (de reversa) -> MARCHA_OFF -> LISTO
+                    (BAJANDO para en seco cuando el cuerpo vuelve a quedar plano: "LLEGUE ABAJO".
+                    Abajo se queda MIRANDO LA ESCALERA: no retrocede (atras no ve) ni gira (el primer
+                    escalon queda pegado delante y girando lo pisaria))
+
+Encima de los escalones va DERECHO y CENTRADO segun lo que el lidar ve delante (contrahuellas y
+paredes: terreno.orientacion_escalera), en las dos direcciones (bajando en reversa el perro
+tambien mira escalera arriba).
 
 Antes de pisar la escalera, cualquier duda = aborta y vuelve a la marcha normal.
 Ya encima de los escalones nunca cambia de marcha: si algo falla se queda quieto (DETENIDO)
@@ -20,27 +26,32 @@ from . import terreno
 from .control import ang
 
 CONFIRMAR_N, CONFIRMAR_T = 3, 4.0        # detecciones seguidas (en 4 s) para confirmar
+T_CRUDOS = 1.0                           # s de nubes crudas para el rumbo fino de la escalera
 # tolerancias entre vistas: una POSIBLE bajada se ve de lejos y su borde "camina" a lo largo
 # mientras el perro se mueve (se ve otro pedazo), asi que su tolerancia es mas ancha
 TOL = {"bajar": (0.15, math.radians(10)), "subir": (0.15, math.radians(10)),
        "posible": (0.40, math.radians(20))}
-NIVEL = math.radians(5)                  # pitch con el que el perro esta "a nivel"
-# BAJADA: termina en cuanto el cuerpo vuelve a quedar PLANO despues de haber ido inclinado (las 4
-# patas abajo). Atras no se ve nada (el L1 mira adelante): no se camina ni un paso mas de reversa
-INCLINADO = math.radians(8)              # pitch de "ya estoy en los escalones"
+# FIN de la escalera: en cuanto el cuerpo vuelve a quedar PLANO o casi (las 4 patas abajo / arriba)
+# despues de haber ido inclinado. Bajando atras no se ve nada (el L1 mira adelante): no se camina ni
+# un paso mas de reversa. El pitch se promedia T_FILTRO s (sin el vaiven de cada paso).
+INCLINADO = math.radians(7)              # pitch de "ya estoy en los escalones"
 T_INCLINADO = 0.3                        # s inclinado seguidos para contarlo
-T_PLANO = 0.5                            # s plano (y quieto) para darlo por terminado
+PLANO_MIN, PLANO_MAX = math.radians(5.5), math.radians(8)   # "casi plano": 35 % de lo mas inclinado, en este rango
+T_FILTRO = 0.4
+T_PLANO = 0.4                            # s casi plano (ya frenado) para darlo por terminado
+RECORRIDO_MAX = 6.0                      # m: una escalera de casa no es mas larga (antes 12)
+BUSCAR_MAX = 0.30                        # m que se mueve buscando espacio para girar antes de bajar
 D_GIRO, D_MIN, D_MAX = 0.65, 0.50, 1.20  # bajada: distancia del centro al borde para girar 180
 D_SUBIR = 0.45                           # subida: centro del perro a 45 cm del primer escalon
 # s maximos por estado (los giros esperan quieto entre pulsos finos: ver _girar_a)
 LIMITE = {"DETENER": 3, "ALINEAR": 25, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 12,
-          "ACERCAR": 12, "GIRAR": 30, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
-          "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "GIRAR_FRENTE": 30, "RESTAURAR": 10}
+          "ACERCAR": 12, "GIRAR": 30, "ESPACIO": 10, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
+          "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "RESTAURAR": 10}
 EN_ESCALERA = ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
 # EMPUJE: el Go2 casi no camina por debajo de ~0.20 m/s (pisa en el sitio) y en la escalera necesita
 # a veces mas. Si avanza menos del 40 % de lo que se le pide, la velocidad sube 3 cm/s cada 0.5 s
 # (hasta v_escalera_max) y se mantiene cuando ya avanza. Solo en los estados que caminan.
-CAMINAN = ("CENTRAR", "DISTANCIA", "ACERCAR", "BAJANDO", "SUBIENDO", "SALIR", "MEDIR")
+CAMINAN = ("CENTRAR", "DISTANCIA", "ACERCAR", "BAJANDO", "SUBIENDO", "SALIR", "MEDIR", "ESPACIO")
 EMPUJE_PASO, EMPUJE_CADA, EMPUJE_VENTANA = 0.03, 0.5, 0.8
 # Alinearse SIN PASARSE con un perro que responde tarde (~0.3 s) y no gira lento (w_min):
 #   grueso: gira normal hasta que lo que falta (contando lo que va a seguir girando) es ZONA_FINA;
@@ -93,13 +104,27 @@ class Detector(object):
         self.centro = "nada"                  # 'caida' | 'suelo' | 'pared' | 'nada' delante
         self.perfil = ""                      # alturas (cm) delante del hocico, cada 10 cm: 'go2 escaleras'
         self.alto_cuerpo = None               # m del cuerpo sobre el suelo estimado (normal ~0.30)
+        self.crudos = []                      # (t, nube cruda limpia) del ultimo segundo
+        self.orient = None                    # terreno.orientacion_escalera delante (o None), con 't'
 
     def limpiar(self):
         self.hist = {k: [] for k in self.hist}
+        self.crudos, self.orient = [], None
 
-    def actualizar(self, xyz, pose, suelo, ahora, alrededor=False):
-        """pose = (x, y, z, yaw)."""
+    def actualizar(self, xyz, pose, suelo, ahora, alrededor=False, crudos=None):
+        """pose = (x, y, z, yaw). crudos: las nubes nuevas SIN voxelizar (para el rumbo fino de la
+        escalera: ver terreno.orientacion_escalera)."""
         x, y, z, yaw = pose
+        if crudos:
+            self.crudos.extend((ahora, c) for c in crudos if len(c))
+        while self.crudos and ahora - self.crudos[0][0] > T_CRUDOS:
+            self.crudos.pop(0)
+        if self.crudos:
+            o = terreno.orientacion_escalera(np.concatenate([c for _t, c in self.crudos]), x, y, yaw, suelo)
+            if o is not None:
+                o["t"] = ahora
+                o["yaw"] = yaw
+            self.orient = o
         if len(xyz) == 0:
             return
         cerca = (np.abs(xyz[:, 0] - x) < 2.5) & (np.abs(xyz[:, 1] - y) < 2.5)
@@ -288,10 +313,7 @@ class Maniobra(object):
 
     def _vencio(self, e, pitch, ahora):
         """Un estado tardo mas de LIMITE[e] s."""
-        tipo = self.m.get("tipo")
         if e == "MARCHA_OFF":
-            self._ir("GIRAR_FRENTE" if tipo == "bajar" else "LISTO", ahora)
-        elif e == "GIRAR_FRENTE":
             self._ir("LISTO", ahora)
         elif e == "RESTAURAR":
             self._fin(False, self.m.get("motivo_abortar", "cancelada"), ahora)
@@ -382,12 +404,31 @@ class Maniobra(object):
                     and holg and holg["atras"][0] > 0.25 and holg["atras"][1] > 0.4):
                 return -0.06, 0.0, 0.0
             return None
-        n = np.array([math.cos(conf["yaw_n"]), math.sin(conf["yaw_n"])])
+        yaw_n = conf["yaw_n"]
+        n = np.array([math.cos(yaw_n), math.sin(yaw_n)])
         t = np.array([-n[1], n[0]])
         lat = float(np.dot(conf["E"] - c["P"], t))
-        self.m.update(E=conf["E"], yaw_n=conf["yaw_n"], n=n, t=t, z_borde=conf["z"],
+        # rumbo FINO con las contrahuellas y las paredes (terreno.orientacion_escalera): el borde en
+        # celdas de 5 cm sale con +-5 grados, y en una escalera angosta eso es ir en diagonal
+        o = c["det"].orient
+        fino = ""
+        if (o is not None and c["ahora"] - o["t"] < 0.6 and (o["contras"] >= 3 or o["paredes"])
+                and abs(ang(o["yaw"] + o["ang"] - yaw_n)) < math.radians(15)):
+            yaw_n = ang(o["yaw"] + o["ang"])
+            n = np.array([math.cos(yaw_n), math.sin(yaw_n)])
+            t = np.array([-n[1], n[0]])
+            if o["paredes"] == 2:                  # entre dos paredes: el centro entre ellas
+                lat = o["centro"]
+            fino = " (rumbo fino: %+.1f grados%s)" % (math.degrees(ang(yaw_n - conf["yaw_n"])),
+                                                     ", centro entre paredes" if o["paredes"] == 2 else "")
+        self.m.update(E=conf["E"], yaw_n=yaw_n, n=n, t=t, z_borde=conf["z"],
                       meta_lat=c["P"] + lat * t, dist=conf["dist"])
-        self.log("borde a %.2f m, centro de la escalera a %+.2f m" % (conf["dist"], lat))
+        self.log("borde a %.2f m, centro de la escalera a %+.2f m%s" % (conf["dist"], lat, fino))
+        if abs(ang(yaw_n - c["yaw"])) > math.radians(3) and not self.m.get("realineado"):
+            self.m["realineado"] = True            # alinearse otra vez con el rumbo fino (una sola vez)
+            self.m["giro"] = None
+            self._ir("ALINEAR", c["ahora"])
+            return None
         self._ir("CENTRAR", c["ahora"])
 
     def _e_centrar(self, c):
@@ -432,15 +473,60 @@ class Maniobra(object):
         return max(0.05, min(0.15, d - D_SUBIR)), 0.0, w
 
     def _e_girar(self, c):
-        """Solo bajada: 180 grados, para bajar de espaldas."""
+        """Solo bajada: 180 grados, para bajar de espaldas. Sin espacio para girar: primero se
+        aleja de lo que estorba (ESPACIO) y recien si no lo encuentra, cancela."""
+        holg = c["holg"]
+        libre = holg["giro"] if holg else math.inf
+        # ya girando, 2 cm menos de exigencia (el ruido de una nube no lo frena a mitad del giro)
+        if libre < self.cfg["radio_giro"] - (0.02 if self.m.get("girando") else 0.0):
+            if self.m.get("buscado", 0.0) < BUSCAR_MAX:
+                self.m["P_buscar"] = c["P"].copy()
+                self.log("para girar tengo %.0f cm libres (hacen falta %.0f): me alejo de lo que estorba"
+                         % (100 * libre, 100 * self.cfg["radio_giro"]))
+                self._ir("ESPACIO", c["ahora"])
+                return None
+            self.abortar("no hay espacio para girar junto a la escalera (%.0f cm libres alrededor, hacen falta %.0f)"
+                         % (100 * libre, 100 * self.cfg["radio_giro"]), c["ahora"])
+            return None
         listo, cmd = self._girar_a(c, self.m["yaw_b"], math.radians(3))
         if listo:
             self._ir("VERIFICAR", c["ahora"])
             return None
-        if c["holg"] and c["holg"]["giro"] < self.cfg["radio_giro"]:
-            self.abortar("no hay espacio para girar junto a la escalera", c["ahora"])
-            return None
+        self.m["girando"] = abs(cmd[2]) > 0.0 or self.m.get("girando", False)
         return cmd
+
+    def _e_espacio(self, c):
+        """Se desliza alejandose de lo que no lo deja girar (de lado o hacia atras del borde, nunca
+        hacia la bajada), hasta BUSCAR_MAX m en total. Despues vuelve a GIRAR."""
+        holg = c["holg"]
+        hecho = float(np.linalg.norm(c["P"] - self.m["P_buscar"]))
+        total = self.m.get("buscado", 0.0) + hecho
+        encontro = holg is not None and holg["giro"] >= self.cfg["radio_giro"] + 0.02
+        d = holg.get("giro_dir") if holg else None
+        if encontro or d is None or total >= BUSCAR_MAX or c["dt"] > 8.0:
+            self.m["buscado"] = total if encontro else BUSCAR_MAX
+            self.m["dist"] = self._d_borde(c["P"])          # (VERIFICAR compara contra esto)
+            self._ir("GIRAR", c["ahora"])
+            return None
+        # direccion contraria a lo que estorba, en el marco del perro; nunca hacia el borde
+        ex, ey = -math.cos(d), -math.sin(d)
+        yaw = c["yaw"]
+        n = self.m.get("n")
+        if n is not None:
+            mundo = np.array([math.cos(yaw) * ex - math.sin(yaw) * ey, math.sin(yaw) * ex + math.cos(yaw) * ey])
+            hacia_borde = float(np.dot(mundo, n))
+            if hacia_borde > 0.0:                         # quitarle la parte que va hacia la bajada
+                mundo = mundo - hacia_borde * n
+                ex = math.cos(yaw) * mundo[0] + math.sin(yaw) * mundo[1]
+                ey = -math.sin(yaw) * mundo[0] + math.cos(yaw) * mundo[1]
+        L = math.hypot(ex, ey)
+        if L < 0.2:                                       # lo unico que queda es ir hacia la bajada: no
+            self.m["buscado"] = BUSCAR_MAX
+            self.m["dist"] = self._d_borde(c["P"])
+            self._ir("GIRAR", c["ahora"])
+            return None
+        v = 0.12
+        return v * ex / L, v * ey / L, 0.0
 
     def _e_verificar(self, c):
         """De espaldas a la bajada, ultima comprobacion antes de poner la marcha:
@@ -478,15 +564,78 @@ class Maniobra(object):
     def _e_subiendo(self, c):
         return self._en_escalones(c, bajando=False)
 
+    def _inclinacion(self, c):
+        """Pitch y roll promediados T_FILTRO s; marca 'inclinado' (ya en los escalones) y lo mas
+        inclinado que fue."""
+        hp = self.m.setdefault("hp", [])
+        hp.append((c["ahora"], c["pitch"], c["roll"]))
+        while hp and c["ahora"] - hp[0][0] > T_FILTRO:
+            hp.pop(0)
+        pf = sum(p for _t, p, _r in hp) / len(hp)
+        rf = sum(r for _t, _p, r in hp) / len(hp)
+        if abs(pf) > INCLINADO:
+            self.m.setdefault("t_incl", c["ahora"])
+            if c["ahora"] - self.m["t_incl"] >= T_INCLINADO:
+                self.m["inclinado"] = True
+            self.m["incl_max"] = max(self.m.get("incl_max", 0.0), abs(pf))
+        else:
+            self.m.pop("t_incl", None)
+        return pf, rf
+
+    def _plano(self, pf, rf):
+        """Cuerpo plano o casi: menos del 35 % de lo mas inclinado (entre 5.5 y 8 grados)."""
+        lim = min(PLANO_MAX, max(PLANO_MIN, 0.35 * self.m.get("incl_max", 0.0)))
+        return abs(pf) < lim and abs(rf) < math.radians(7)
+
+    def _rumbo_escalera(self, c, yref, en_escalones):
+        """Rumbo escalera-arriba (odom) y centro de la escalera (de lado, m) segun lo que el lidar ve
+        delante (Detector.orient: contrahuellas y paredes). Suavizado, y sin alejarse mas de 20
+        grados del rumbo medido al empezar. Bajando, recien cuenta ya en los escalones (antes el
+        perro mira el pasillo de arriba, no la escalera)."""
+        ye = self.m.get("yaw_esc", yref)
+        centro = None
+        o = c["det"].orient if c["det"] is not None else None
+        if (en_escalones and o is not None and c["ahora"] - o["t"] < 0.6 and (o["contras"] >= 2 or o["paredes"])):
+            med = ang(o["yaw"] + o["ang"])
+            if abs(ang(med - yref)) < math.radians(20):
+                if abs(ang(med - ye)) < math.radians(10):
+                    ye = ang(ye + 0.25 * ang(med - ye))
+                    self.m["raros"] = 0
+                else:                                  # muy distinto: solo si se repite
+                    self.m["raros"] = self.m.get("raros", 0) + 1
+                    if self.m["raros"] >= 6:
+                        ye, self.m["raros"] = med, 0
+                centro = o["centro"]
+        self.m["yaw_esc"] = ye
+        return ye, centro
+
+    def _centrar_linea(self, P, ye, centro, izq, der):
+        """vy para ir por el CENTRO de la escalera. La linea del centro se mide antes de empezar
+        (MEDIR: entre las paredes o con el ancho de la escalera) y se sigue con la ODOMETRIA: asi se
+        corrige aunque el lidar no vea nada al costado (bajando de reversa, al principio la escalera
+        y sus paredes quedan detras). Lo que se ve delante (centro de la escalera) corrige la linea
+        de a poco; con paredes a los dos lados, mandan ellas."""
+        t = np.array([-math.sin(ye), math.cos(ye)])
+        L0 = self.m.get("linea")
+        if L0 is None:
+            L0 = np.array(self.m.get("meta_lat", P), float)
+        if centro is not None:
+            L0 = L0 + 0.2 * float(np.dot(P + centro * t - L0, t)) * t
+        self.m["linea"] = L0
+        e = float(np.dot(L0 - P, t))
+        if max(izq, der) < 0.40:
+            e = (izq - der) / 2.0
+        self.m["error_lateral"] = e
+        return _lim(0.8 * e, 0.08)
+
     def _en_escalones(self, c, bajando):
-        """Encima de los escalones: avanza (hacia atras si baja) manteniendo el rumbo, centrado
-        entre paredes/barandas, y espera si algo se cruza. Termina cuando volvio a estar a
-        nivel y la altura se estabilizo."""
+        """Encima de los escalones: avanza (hacia atras si baja) DERECHO y CENTRADO segun la escalera
+        que ve delante, y espera si algo se cruza. Termina en cuanto el cuerpo vuelve a quedar plano
+        (o casi) despues de ir inclinado."""
         ahora, P, z, yaw, holg, det = c["ahora"], c["P"], c["z"], c["yaw"], c["holg"], c["det"]
         if self.m.get("P0") is None:           # retomado despues de DETENIDO
             self.m.update(P0=P.copy(), mov=(ahora, P.copy()), hz=[])
         yref = self.m["yaw_b"] if bajando else self.m["yaw_n"]
-        w = self._w_rumbo(yref, yaw)
         f = np.array([math.cos(yref), math.sin(yref)])
         sgn = -1.0 if bajando else 1.0
         s = sgn * float(np.dot(P - self.m["P0"], f))      # avance (hacia atras si baja)
@@ -497,42 +646,39 @@ class Maniobra(object):
             hz.pop(0)
         if (dz < -0.06) if bajando else (dz > 0.06):
             self.m["piso_cambio"] = True
-        nivelado = abs(c["pitch"]) < NIVEL and abs(c["roll"]) < math.radians(6)
-        if abs(c["pitch"]) > INCLINADO:
-            self.m.setdefault("t_incl", ahora)
-            if ahora - self.m["t_incl"] >= T_INCLINADO:
-                self.m["inclinado"] = True
-        else:
-            self.m.pop("t_incl", None)
+        pf, rf = self._inclinacion(c)
+        nivelado = self._plano(pf, rf)
         estable = (len(hz) > 8 and hz[-1][0] - hz[0][0] > 1.3
                    and max(v for _, v in hz) - min(v for _, v in hz) < 0.03)
-        self.info = "%s %.2f m, recorrido %.2f m" % ("bajado" if bajando else "subido", abs(dz), s)
-        # centrado entre las paredes/barandas de la escalera (si se ven: ver control.paredes_laterales).
-        # Corrige tambien la deriva de un rumbo unos grados torcido (el borde se mide en celdas de 5 cm)
-        vy = 0.0
-        if holg:
-            izq, der = holg.get("pared_izq", math.inf), holg.get("pared_der", math.inf)
-            if min(izq, der) < 0.40:
-                izq, der = min(izq, 0.6), min(der, 0.6)
-                vy = _lim(0.6 * (izq - der) / 2.0, 0.08)
+        en_escalones = not bajando or self.m.get("inclinado") or self.m.get("piso_cambio")
+        ye, centro = self._rumbo_escalera(c, yref, en_escalones)
+        w = self._w_rumbo(ye, yaw)
+        self.info = "%s %.2f m, recorrido %.2f m, inclinado %.0f" % (
+            "bajado" if bajando else "subido", abs(dz), s, math.degrees(abs(pf)))
+        izq, der = (holg.get("pared_izq", math.inf), holg.get("pared_der", math.inf)) if holg else (math.inf, math.inf)
+        vy = self._centrar_linea(P, ye, centro, izq, der)
+        self.info += ", corrido %+.0f cm del centro" % (-100 * self.m["error_lateral"])
+        if izq < 0.05:                         # rozando una pared: lejos de ella si o si
+            vy = min(vy, -0.06)
+        if der < 0.05:
+            vy = max(vy, 0.06)
         # (subiendo, los escalones mismos son "obstaculos": solo cuenta algo mas alto)
         bloqueo = bool(holg) and ((holg["atras"][0] < 0.10) if bajando
                                   else (holg.get("alto_delante", 9.0) < 0.25))
         if bloqueo:
             # si es una baranda de un lado, se corre al otro; si no, espera (persona)
-            izq, der = holg.get("pared_izq", math.inf), holg.get("pared_der", math.inf)
             if abs(izq - der) > 0.08 and max(izq, der) > 0.10:
                 self.info += " (me corro de la baranda)"
                 return 0.0, (0.08 if izq > der else -0.08), w
             self.info += " (algo en el camino, espero)"
             return None
         if bajando:
-            fin = self._fin_bajada(c, nivelado, estable, dz)
+            fin = self._fin_bajada(c, nivelado, estable, dz, pf)
             if fin is not None:
                 return fin
-        elif dz > 0.10 and nivelado and estable:
+        elif dz > 0.10 and ((self.m.get("inclinado") and nivelado) or (estable and abs(pf) < PLANO_MAX)):
             if det.confirmada("subir", ahora, P) is None:
-                self.log("arriba: %s" % self.info)
+                self.log("LLEGUE ARRIBA: %s" % self.info)
                 self.m["Ps"] = P.copy()
                 self._ir("SALIR", ahora)
                 return None
@@ -542,16 +688,16 @@ class Maniobra(object):
             self.m["mov"] = (ahora, P.copy())
         elif ahora - t0 > 6.0 and self.empuje_al_maximo():
             # (solo si ya se le pidio lo maximo: antes se rendia a 0.15 m/s, donde el Go2 pisa en el sitio)
-            if not self.m["piso_cambio"] and nivelado:
+            if not self.m["piso_cambio"] and not self.m.get("inclinado"):
                 self.abortar("el perro no avanza en la escalera (revisa la marcha / firmware)", ahora)
             else:
                 self.detener("no avanza", ahora)
             return None
-        if bajando and not self.m["piso_cambio"] and s > self.m.get("dist", 0.7) + 0.9:
+        if bajando and not self.m["piso_cambio"] and not self.m.get("inclinado") and s > self.m.get("dist", 0.7) + 0.9:
             self.abortar("pase el borde y no baje: no era escalera", ahora)
             return None
-        if s > 12.0:
-            self.detener("recorrio demasiado", ahora)
+        if s > RECORRIDO_MAX:
+            self.detener("recorrio %.1f m y no termino la escalera" % s, ahora)
             return None
         v = self.cfg["v_bajar"] if bajando else self.cfg["v_subir"]
         g = self.m.get("emp")
@@ -559,14 +705,15 @@ class Maniobra(object):
             self.info += " (empujando %.2f m/s: no avanzaba a %.2f)" % (min(v * g["k"], self.cfg.get("v_escalera_max", 0.40)), v)
         return sgn * v, vy, w
 
-    def _fin_bajada(self, c, nivelado, estable, dz):
-        """Bajando: el cuerpo volvio a quedar plano despues de ir inclinado (o, si el pitch no se
-        movio, la altura ya bajo y se estabilizo) -> para EN SECO y quita la marcha. Primero frena y
-        despues comprueba quieto T_PLANO s: si era un vaiven del paso, sigue bajando.
+    def _fin_bajada(self, c, nivelado, estable, dz, pf):
+        """Bajando: el cuerpo volvio a quedar plano (o casi) despues de ir inclinado -> para EN SECO,
+        dice LLEGUE ABAJO y quita la marcha. Si el pitch nunca se movio: la altura ya bajo y se
+        estabilizo. Primero frena y despues comprueba quieto T_PLANO s: si era un vaiven, sigue.
         Devuelve (0, 0, 0) mientras comprueba, None si hay que seguir bajando."""
         ahora = c["ahora"]
-        bajo = self.m.get("inclinado") or (dz < -0.10 and estable)
-        if not (bajo and nivelado):
+        bajo = ((self.m.get("inclinado") and nivelado)
+                or (dz < -0.10 and estable and abs(pf) < PLANO_MAX))
+        if not bajo:
             if self.m.pop("t_plano", None) is not None:
                 self.info += " (no era el final: sigo)"
             return None
@@ -574,7 +721,7 @@ class Maniobra(object):
         if ahora - self.m["t_plano"] < T_PLANO:
             self.info += " (cuerpo plano: freno y compruebo)"
             return 0.0, 0.0, 0.0
-        self.log("abajo, cuerpo plano: paro de ir para atras (%s)" % self.info)
+        self.log("LLEGUE ABAJO: cuerpo plano, paro de ir para atras y me quedo mirando la escalera (%s)" % self.info)
         self.m["dz"] = c["z"] - self.m["z0"]
         self.m["espera"] = self.robot.modo_escaleras(False)
         self.m["marcha"] = False
@@ -602,19 +749,11 @@ class Maniobra(object):
             self.robot.balancear()
             self.m["bal"] = True
         if c["dt"] > self.m["espera"] + 0.6:
-            self._ir("GIRAR_FRENTE" if self.bajando else "LISTO", c["ahora"])
-
-    def _e_girar_frente(self, c):
-        """Abajo, de espaldas: vuelve a mirar hacia donde iba (si hay espacio)."""
-        listo, cmd = self._girar_a(c, self.m["yaw_n"], math.radians(4))
-        if listo or (c["holg"] and c["holg"]["giro"] < self.cfg["radio_giro"]):
-            self._ir("LISTO", c["ahora"])      # sin espacio: se queda de espaldas
-            return None
-        return cmd
+            self._ir("LISTO", c["ahora"])
 
     def _e_listo(self, c):
         dz = float(self.m.get("dz", 0.0))
-        self._fin(True, "%s %.2f m" % ("bajo" if self.bajando else "subio", abs(dz)), c["ahora"],
+        self._fin(True, "%s %.2f m" % ("LLEGUE ABAJO: baje" if self.bajando else "LLEGUE ARRIBA: subi", abs(dz)), c["ahora"],
                   dz=dz, yaw_n=self.m["yaw_n"], E=[float(v) for v in self.m["E"]])
 
     def _e_restaurar(self, c):
