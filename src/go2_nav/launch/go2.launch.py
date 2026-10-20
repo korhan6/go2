@@ -69,6 +69,7 @@ def generate_launch_description():
         DeclareLaunchArgument("mundo", default_value="casa"),
         DeclareLaunchArgument("fantasmas", default_value="false"),
         DeclareLaunchArgument("inicio_sim", default_value=""),
+        DeclareLaunchArgument("puntos_sim", default_value="0"),        # 2500 = lidar ralo como el L1
         # al_final: termina el piso y despues toma las escaleras | inmediato | off
         DeclareLaunchArgument("escaleras", default_value="al_final"),
         DeclareLaunchArgument("vision", default_value="true"),
@@ -77,9 +78,15 @@ def generate_launch_description():
 
         Node(package="go2_nav", executable="perro_sim", name="go2_perro_sim", output="screen",
              parameters=[{"mundo": mundo, "fantasmas": ParameterValue(fantasmas, value_type=bool),
-                          "inicio": LaunchConfiguration("inicio_sim")}],
+                          "inicio": LaunchConfiguration("inicio_sim"),
+                          "puntos_por_nube": ParameterValue(LaunchConfiguration("puntos_sim"), value_type=int)}],
              condition=IfCondition(sim)),
         Node(package="go2_nav", executable="driver", name="go2_driver", output="screen"),
+        # donde esta el L1 en el perro (URDF del Go2: 0.29 m adelante del centro, en la cabeza).
+        # Los costmaps borran obstaculos con rayos desde el sensor: desde base_link, cada rayo a un
+        # punto detras de un marco de puerta "atravesaba" el marco y lo borraba
+        Node(package="tf2_ros", executable="static_transform_publisher", name="tf_lidar",
+             arguments=["--x", "0.29", "--frame-id", "base_link", "--child-frame-id", "lidar"]),
         Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen"),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen"),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo)

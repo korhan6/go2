@@ -99,12 +99,13 @@ class Vista(object):
         return g, x0 - VRES / 2, y0 - VRES / 2
 
 
-def paredes_slam(mapa, largo_min=4, engordar=1):
+def paredes_slam(mapa, largo_min=4, engordar=0):
     """Paredes del mapa de slam_toolbox (OccupancyGrid) como mascara bool (alto x ancho).
 
     1) une los puntos de una misma pared separados por 1 celda (una pared vista "punteada");
     2) quita los pedazos de menos de largo_min celdas (20 cm): un puntito de ruido, un rebote;
-    3) engorda 'engordar' celdas (5 cm) para que el planificador no pase por una rendija.
+    3) engorda 'engordar' celdas (por defecto 0: el inflado de Nav2 ya da la distancia; engordar
+       achicaba las puertas 10 cm y el planificador a veces no encontraba ruta por ellas).
     Lo desconocido NO es pared."""
     from scipy import ndimage
     g = np.array(mapa.data, np.int8).reshape(mapa.info.height, mapa.info.width)

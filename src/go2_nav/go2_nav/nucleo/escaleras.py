@@ -26,9 +26,10 @@ TOL = {"bajar": (0.15, math.radians(10)), "subir": (0.15, math.radians(10)),
 NIVEL = math.radians(5)                  # pitch con el que el perro esta "a nivel"
 D_GIRO, D_MIN, D_MAX = 0.65, 0.50, 1.20  # bajada: distancia del centro al borde para girar 180
 D_SUBIR = 0.45                           # subida: centro del perro a 45 cm del primer escalon
-LIMITE = {"DETENER": 3, "ALINEAR": 15, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 12,
-          "ACERCAR": 12, "GIRAR": 20, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
-          "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "GIRAR_FRENTE": 20, "RESTAURAR": 10}
+# s maximos por estado (los giros esperan quieto entre pulsos finos: ver _girar_a)
+LIMITE = {"DETENER": 3, "ALINEAR": 25, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 12,
+          "ACERCAR": 12, "GIRAR": 30, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
+          "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "GIRAR_FRENTE": 30, "RESTAURAR": 10}
 EN_ESCALERA = ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
 # Alinearse SIN PASARSE con un perro que responde tarde (~0.3 s) y no gira lento (w_min):
 #   grueso: gira normal hasta que lo que falta (contando lo que va a seguir girando) es ZONA_FINA;

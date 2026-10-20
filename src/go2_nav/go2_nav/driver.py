@@ -257,9 +257,13 @@ class Driver(Node):
             # y que no vaya rozando: los costados con algo de aire
             libre = libre and all(H.get(k) is None or H.get(k) >= 0.10 for k in costados)
             if libre:
-                k = self.v_efectiva / v
-                vx, vy = vx * k, vy * k
-                self.subidas += 1
+                # el giro se escala IGUAL que el avance: misma curva que calculo Nav2, solo mas
+                # rapido. Antes subia solo el avance (0.08 -> 0.20 m/s con el mismo giro): el arco
+                # salia 2.5 veces mas abierto y la esquina del perro cortaba el marco de la puerta
+                k = min(self.v_efectiva / v, self.wz_max / abs(wz)) if abs(wz) > 1e-3 else self.v_efectiva / v
+                if k > 1.0:
+                    vx, vy, wz = vx * k, vy * k, wz * k
+                    self.subidas += 1
         elif v < self.min_v and abs(wz) < self.w_efectiva:
             # giro en el sitio: una correccion minima se ignora (casi alineado: mejor parar que
             # pasarse); una correccion real se sube al minimo con el que el Go2 si gira

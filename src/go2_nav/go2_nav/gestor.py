@@ -1021,6 +1021,8 @@ class Gestor(Node):
         """/go2/mapa_paredes: 100 = pared del SLAM (filtrada), 0 = todo lo demas (lo no visto
         sigue siendo transitable para el planificador). Solo cuando cambia el /map."""
         m = self.mapa
+        if m is not None and (m.info.width == 0 or m.info.height == 0):
+            return                                  # slam_toolbox arranca con un /map de 0x0: Nav2 lo rechaza
         if m is None:
             if self.paredes_de != "vacio":          # piso nuevo: borrar las paredes del anterior
                 g = OccupancyGrid()
@@ -1039,7 +1041,9 @@ class Gestor(Node):
         g = OccupancyGrid()
         g.header.frame_id = m.header.frame_id or "map"
         g.header.stamp = self.get_clock().now().to_msg()
-        g.info = m.info
+        g.info.resolution, g.info.width, g.info.height = m.info.resolution, m.info.width, m.info.height
+        g.info.origin.position = m.info.origin.position
+        g.info.origin.orientation.w = 1.0       # (el del SLAM puede venir sin normalizar: Nav2 lo rechaza)
         g.data = (pared.astype("int8") * 100).ravel().tolist()
         self.pub_paredes.publish(g)
         self.paredes_de = clave

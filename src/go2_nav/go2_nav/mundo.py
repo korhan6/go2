@@ -239,9 +239,11 @@ class RobotSim(Robot):
         ii, jj, px, py, d = ii[sel], jj[sel], px[sel], py[sel], d[sel]
         pared = self.m.pared[ii, jj]
         pz = self.m.suelo[ii, jj]
-        # oclusion: muestreo a lo largo del rayo
-        n = 24
-        ts = np.linspace(0.08, 0.97, n)
+        # oclusion: muestreo a lo largo del rayo cada <= 4 cm (menos que la pared mas delgada, 5 cm).
+        # Antes eran 24 muestras por rayo (cada 15 cm en un rayo de 4 m): el lidar simulado veia A
+        # TRAVES de paredes y puertas, y esos rayos borraban paredes del mapa de costos
+        n = int(np.ceil(R / 0.04))
+        ts = np.linspace(0.08 / R, 1.0 - 0.03 / R, n)
         visible = np.ones(len(px), bool)
         for t in ts:
             qx = sx + t * (px - sx)

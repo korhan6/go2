@@ -13,7 +13,8 @@ Lo que limpia (medido en el Go2 real del usuario):
   2. el ERROR DE ALTURA DEL L1 DE CERCA: el suelo sale +12 cm a 15 cm del lidar, +7 cm a 35 cm,
      0 a ~0.7 m. Sin corregir, el suelo junto a la cabeza parece un obstaculo de 10 cm;
   3. puntos fantasma propios aprendidos con 'go2 calibrar' (columnas fijas al cuerpo);
-  4. ruido suelto: un obstaculo tiene que aparecer en 2 de las ultimas 3 nubes;
+  4. ruido suelto: un obstaculo tiene que verse en 2 de las ultimas 6 nubes (voxeles de 10 cm en
+     odom: con el L1, ralo, cada nube toca otros puntos del mismo objeto; ver nucleo/voxeles.py);
   5. reflejos del piso brillante (salen DEBAJO del suelo): no son caidas salvo que formen una
      superficie plana sin suelo encima (escalon, hueco real).
 """
@@ -36,7 +37,8 @@ from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from .nube import a_cuerpo, crear_nube, leer_xyz, voxel_unico, yaw_de_quat
-from .nucleo.terreno import ANCHO2, LARGO2, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
+from .nucleo.voxeles import VoxelesRecientes
+from .nucleo.terreno import ANCHO2, LARGO2, caidas_rejilla, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
 
 
 # ---------------------------------------------------------------- mascara aprendida
@@ -199,7 +201,9 @@ class Limpiador(Node):
         self.mem_t = np.zeros(0, np.float64)
         self.pose = None            # (x, y, z, yaw) del perro en odom
         self.suelo = None
-        self.prev_keys = collections.deque(maxlen=2)
+        self.hist_caidas = collections.deque(maxlen=6)     # (puntos bajo el suelo, suelo xy) por nube
+        self.voxeles = VoxelesRecientes(p("voxel_obstaculo", 0.10).value, p("nubes_confirmar", 6).value,
+                                        p("nubes_minimas", 2).value)
         self.hist_scan = collections.deque()
         self.calib = None
         self.t_calib = 0.0
@@ -296,18 +300,13 @@ class Limpiador(Node):
         # 4) clases
         es_suelo = (np.abs(h) < 0.06) & ~propio
         cand = (h >= self.obst_min) & (h <= self.obst_max) & ~propio
-        # 5) persistencia: un obstaculo real aparece en 2 de las ultimas 3 nubes
-        V = 0.12
-        k = np.floor(xyz[cand] / V).astype(np.int64)
-        keys = (k[:, 0] << 40) ^ (k[:, 1] << 20) ^ k[:, 2]
-        if self.persistencia and len(self.prev_keys) == 2:
-            ok = np.isin(keys, self.prev_keys[0]) | np.isin(keys, self.prev_keys[1])
+        # 5) confirmacion con varias nubes (nucleo/voxeles.py): un obstaculo real se ve en >= 2 de
+        #    las ultimas 6 nubes; con el L1 (ralo) cada nube toca puntos distintos del mismo marco
+        if self.persistencia:
+            obst, ok = self.voxeles.sumar(xyz[cand])
         else:
-            ok = np.ones(len(keys), bool)
-        self.prev_keys.append(np.unique(keys))
-        idx = np.nonzero(cand)[0]
-        obst = xyz[idx[ok]]
-        ruido = xyz[idx[~ok]]
+            obst, ok = xyz[cand], np.ones(int(cand.sum()), bool)
+        ruido = xyz[cand][~ok]
         # 6) caidas: celdas sin suelo con una SUPERFICIE plana por debajo (escalon, hueco)
         virtuales = self.caidas(xyz, fx, fy, h, suelo, x, y)
         # 7) memoria: lo real que entra a la zona ciega (pegado al cuerpo / mascara) se recuerda
@@ -347,7 +346,10 @@ class Limpiador(Node):
         if len(obst):
             keys = (k[:, 0] << 42) ^ ((k[:, 1] & 0x1FFFFF) << 21) ^ (k[:, 2] & 0x1FFFFF)
             keys, idx = np.unique(keys, return_index=True)
-            nuevos_xyz = (k[idx] + 0.5).astype(np.float32) * V
+            # el punto MEDIDO, no el centro del cubo: con el centro, un marco de puerta quedaba
+            # hasta 8 cm corrido hacia adentro de la pared, la puerta "se ensanchaba" en el mapa y
+            # el perro rozaba el marco al girar dentro de ella (prueba_puerta.py)
+            nuevos_xyz = obst[idx].astype(np.float32)
         else:
             keys, nuevos_xyz = np.zeros(0, np.int64), np.zeros((0, 3), np.float32)
         viejo = ~np.isin(self.mem_k, keys)
@@ -392,38 +394,25 @@ class Limpiador(Node):
         return self.suelo
 
     def caidas(self, xyz, fx, fy, h, suelo, x, y):
-        R, C = 2.5, 0.10
-        sel = (np.abs(fx) < R) & (np.abs(fy) < R)
-        if not np.any(sel):
+        """Puntos virtuales (a 25 cm sobre el suelo) en las celdas de caida, para que Nav2 no se
+        acerque al borde de una escalera o un desnivel. Junta las ultimas nubes (con el L1, ralo,
+        una sola nube casi nunca da los puntos suficientes) y marca tambien la sombra del borde
+        (ver terreno.caidas_rejilla)."""
+        R = 2.5
+        cerca = (np.abs(fx) < R) & (np.abs(fy) < R)
+        bajo = cerca & (h < -self.caida_min)
+        piso = cerca & (np.abs(h) < 0.06)
+        # alturas absolutas (odom): con otro suelo estimado se recalculan respecto del actual
+        self.hist_caidas.append((xyz[bajo].copy(), xyz[piso, :2].copy()))
+        B = np.concatenate([b for b, _ in self.hist_caidas])
+        P = np.concatenate([p for _, p in self.hist_caidas])
+        hb = B[:, 2] - suelo
+        B = B[hb < -self.caida_min]
+        celdas = caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], P, x, y, R=R)
+        if len(celdas) == 0:
             return np.zeros((0, 3), np.float32)
-        px, py, ph = xyz[sel, 0], xyz[sel, 1], h[sel]
-        i = np.floor((px - x + R) / C).astype(np.int64)
-        j = np.floor((py - y + R) / C).astype(np.int64)
-        n = int(2 * R / C)
-        ok = (i >= 0) & (i < n) & (j >= 0) & (j < n)
-        i, j, ph = i[ok], j[ok], ph[ok]
-        cel = i * n + j
-        hay_suelo = np.zeros(n * n, bool)
-        hay_suelo[cel[np.abs(ph) < 0.06]] = True
-        bajo = ph < -self.caida_min
-        if not np.any(bajo):
-            return np.zeros((0, 3), np.float32)
-        cb, hb = cel[bajo], ph[bajo]
-        cnt = np.bincount(cb, minlength=n * n)
-        # superficie: poca dispersion de alturas en la celda
-        s1 = np.bincount(cb, weights=hb, minlength=n * n)
-        s2 = np.bincount(cb, weights=hb * hb, minlength=n * n)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            var = s2 / np.maximum(cnt, 1) - (s1 / np.maximum(cnt, 1)) ** 2
-        caida = (cnt >= 6) & ~hay_suelo & (var < 0.03 ** 2)
-        if not np.any(caida):
-            return np.zeros((0, 3), np.float32)
-        ii, jj = np.divmod(np.nonzero(caida)[0], n)
-        cx = x - R + (ii + 0.5) * C
-        cy = y - R + (jj + 0.5) * C
-        out = []
-        for dx, dy in ((-0.025, -0.025), (0.025, -0.025), (-0.025, 0.025), (0.025, 0.025)):
-            out.append(np.c_[cx + dx, cy + dy, np.full(len(cx), suelo + 0.25)])
+        out = [np.c_[celdas[:, 0] + dx, celdas[:, 1] + dy, np.full(len(celdas), suelo + 0.25)]
+               for dx, dy in ((-0.025, -0.025), (0.025, -0.025), (-0.025, 0.025), (0.025, 0.025))]
         return np.concatenate(out).astype(np.float32)
 
     def publicar_scan(self, obst, x, y, yaw, stamp):

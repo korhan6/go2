@@ -29,6 +29,8 @@
   go2 calibrar          gira 2 vueltas y aprende los puntos fantasma del propio perro
   go2 levantar          pone al perro de pie
   go2 log               ultimos mensajes
+  go2 costmap [global]  lo que Nav2 ve alrededor del perro, en texto (3 x 3 m): para mandar en una foto
+  go2 nav2 [segundos]   junta los avisos y errores de Nav2 (20 s) y los resume: por que no avanza
 """
 import json
 import math
@@ -318,6 +320,89 @@ def calibrar_mov(nodo):
     return 0
 
 
+def costmap(nodo, args):
+    """Dibuja el mapa de costos de Nav2 alrededor del perro (texto, para una foto)."""
+    from nav_msgs.msg import OccupancyGrid
+    from tf2_ros import Buffer, TransformListener
+    cual = "global" if args and args[0] == "global" else "local"
+    top = "/%s_costmap/costmap" % cual
+    marco = "map" if cual == "global" else "odom"
+    tfb = Buffer()
+    TransformListener(tfb, nodo)
+    m = {}
+    nodo.create_subscription(OccupancyGrid, top, lambda msg: m.__setitem__("c", msg), 1)
+    t = time.monotonic()
+    pose = None
+    while time.monotonic() - t < 8.0 and ("c" not in m or pose is None):
+        rclpy.spin_once(nodo, timeout_sec=0.1)
+        try:
+            tr = tfb.lookup_transform(marco, "base_link", rclpy.time.Time())
+            q = tr.transform.rotation
+            pose = (tr.transform.translation.x, tr.transform.translation.y,
+                    math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        except Exception:
+            pass
+    if "c" not in m or pose is None:
+        print("no llega %s o el TF %s->base_link (go2 lanzar corriendo?)" % (top, marco))
+        return 1
+    c = m["c"]
+    W, H, r = c.info.width, c.info.height, c.info.resolution
+    ox, oy = c.info.origin.position.x, c.info.origin.position.y
+    x0, y0, yaw = pose
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    print("%s alrededor del perro (arriba = hacia donde MIRA el perro; 5 cm por letra, 3 x 3 m)" % top)
+    print("  # obstaculo   + el centro del perro no puede estar ahi   : costo alto   . bajo   ? sin ver")
+    print("  o huella del perro   ^ hocico")
+    paso, L = 0.05, 1.5
+    for k in range(int(2 * L / paso), -1, -1):
+        fila = ""
+        for q in range(int(2 * L / paso) + 1):
+            a = k * paso - L          # hacia adelante del perro
+            b = L - q * paso          # hacia la izquierda
+            x, y = x0 + cy * a - sy * b, y0 + sy * a + cy * b
+            if abs(b) <= 0.17 and -0.38 <= a <= 0.46 and (abs(abs(b) - 0.16) < 0.026 or abs(a - 0.45) < 0.026
+                                                           or abs(a + 0.37) < 0.026):
+                fila += "^" if abs(a - 0.45) < 0.026 and abs(b) < 0.03 else "o"
+                continue
+            i, j = int(math.floor((y - oy) / r)), int(math.floor((x - ox) / r))
+            v = c.data[i * W + j] if 0 <= i < H and 0 <= j < W else -1
+            fila += "?" if v < 0 else "#" if v >= 100 else "+" if v >= 99 else ":" if v >= 50 else "." if v > 0 else " "
+        print(fila)
+    return 0
+
+
+def nav2_avisos(nodo, args):
+    """Resume los WARN/ERROR de Nav2 (y del SLAM) de los proximos segundos, con que significan."""
+    from rcl_interfaces.msg import Log
+    dur = float(args[0]) if args else 20.0
+    cuenta = {}
+    nodo.create_subscription(Log, "/rosout", lambda m: cuenta.__setitem__(
+        (m.name, m.msg[:110]), cuenta.get((m.name, m.msg[:110]), 0) + 1) if m.level >= 30 else None, 100)
+    print("escuchando los avisos de Nav2 %.0f s (deja al perro intentando lo que falla)..." % dur)
+    t = time.monotonic()
+    while time.monotonic() - t < dur:
+        rclpy.spin_once(nodo, timeout_sec=0.1)
+    significado = [
+        ("Optimizer fail", "el controlador no encuentra NINGUNA trayectoria sin choque (la huella ya toca un obstaculo, "
+                           "o hay obstaculos fantasma pegados al cuerpo): mira 'go2 costmap'"),
+        ("Failed to create plan", "el planificador no encuentra ruta hasta la meta (puerta cerrada en el mapa de costos): "
+                                  "mira 'go2 costmap global'"),
+        ("Collision Ahead", "una maniobra de recuperacion (retroceder) no se hizo porque hay algo detras"),
+        ("patience exceeded", "el controlador se rindio despues de fallar un rato seguido"),
+        ("Failed to make progress", "el perro no se movio lo suficiente en 15 s (pisa en el sitio o esta trabado)"),
+        ("malformed", "un mapa que llego a Nav2 estaba mal armado (avisame)"),
+        ("extrapolation", "el TF llega atrasado (lidar cortado o PC lenta)"),
+        ("missed its desired rate", "la PC no alcanza a calcular a tiempo (CPU)"),
+    ]
+    if not cuenta:
+        print("sin avisos de Nav2 en %.0f s" % dur)
+        return 0
+    for (nombre, msg), k in sorted(cuenta.items(), key=lambda kv: -kv[1])[:15]:
+        que = next((d for clave, d in significado if clave.lower() in msg.lower()), "")
+        print("%4dx [%s] %s%s" % (k, nombre, msg, ("\n        -> " + que) if que else ""))
+    return 0
+
+
 def avisos(L, D):
     a = []
     if L and L.get("calibrado") is False:
@@ -394,6 +479,10 @@ def main():
             return manejar(nodo)
         if args[0] == "calibrar_mov":
             return calibrar_mov(nodo)
+        if args[0] == "costmap":
+            return costmap(nodo, args[1:])
+        if args[0] == "nav2":
+            return nav2_avisos(nodo, args[1:])
         cli = nodo.create_client(Comando, "/go2/comando")
         if not cli.wait_for_service(timeout_sec=5.0):
             print("go2_nav no esta corriendo. Arrancalo con: ros2 launch go2_nav go2.launch.py")

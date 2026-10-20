@@ -19,7 +19,10 @@ es de milisegundos.
 | `go2_vision` | [YOLOv8](https://github.com/ultralytics/ultralytics) entrenado con Open Images V7 (600 clases) | la **cámara del perro** por el cable, YOLO en la **GPU** de la laptop: ve escaleras, personas, sillas, puertas... y las ubica en el mapa con la distancia del lidar |
 
 ### La huella (obstacle avoidance)
-- **Lados:** el cuerpo exacto (±16 cm).
+- **Margen de 7 cm alrededor de toda la huella** (`footprint_padding`): sin él, al salir de una
+  puerta girando, la esquina trasera enganchaba el marco (medido con Nav2 real: ver "Si algo
+  falla"). El perro pasa por puertas de 70 cm y pasillos de 60 cm.
+- **Lados:** el cuerpo exacto (±16 cm) + el margen.
 - **Atrás:** exacto.
 - **Adelante:** +9 cm de margen, más una zona de 38 cm delante del hocico donde va a la mitad de
   velocidad.
@@ -244,6 +247,12 @@ python3 pruebas/prueba_nucleo.py bajar     # la bajada en reversa paso a paso
 ```
 Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanzan todo con ROS 2.
 
+Con ROS 2 (Nav2 + slam_toolbox reales, perro simulado):
+```
+python3 pruebas/prueba_puerta.py 150 2500   # cuarto -> puerta de 72 cm -> pasillo con escalera; lidar ralo como el L1
+go2 sim mundo:=puerta puntos_sim:=2500      # lo mismo, para mirarlo en RViz
+```
+
 ## Si algo falla
 - **El perro hace menos de lo que se le pide** (gira o camina más lento que la `orden` de
   `go2 ver`). Mídelo con `go2 probar_mov`, que lo gira 3 s y lo avanza 2 s.
@@ -275,6 +284,30 @@ Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanz
   - el lidar se apaga si el perro está echado: `go2 levantar`.
 - **El perro no se mueve:** `move` en `go2 ver` debe estar en ~20 Hz mientras navega. Si está en
   20 y no camina, el control remoto o la app tienen el mando: suelta los joysticks y cierra la app.
+- **Llega a una puerta y no pasa / se traba en el marco / se queda quieto delante:**
+  manda una foto de esto, con el perro intentando:
+  ```
+  go2 costmap          # lo que ve Nav2 alrededor del perro (¿la puerta está abierta en el mapa?)
+  go2 costmap global   # lo que usa el planificador
+  go2 nav2             # 20 s de avisos de Nav2, con lo que significa cada uno
+  ```
+  Lo que ya se corrigió (reproducido con Nav2 real, perro simulado con lidar ralo como el L1, en
+  una casa como la tuya: `pruebas/prueba_puerta.py`):
+  - el marco de la puerta aparecía y desaparecía del mapa de obstáculos (el filtro anti-ruido
+    pedía el mismo cubito en 2 de 3 nubes; con el L1, ralo, el marco lo pasaba la mitad de las
+    veces). Ahora se confirma con 2 de las últimas 6 nubes en cubos de 10 cm;
+  - los rayos que BORRAN obstáculos del mapa salían del centro del perro y no del lidar (en la
+    cabeza): cada rayo hacia un punto detrás del marco lo "atravesaba" y lo borraba;
+  - el borde de una escalera que baja quedaba sin marcar (sombra del lidar): Nav2 llevaba al
+    perro hasta el filo. Ahora se marca la caída en el borde real (±4 cm, desde 0.6 m);
+  - la memoria de obstáculos guardaba el centro de cubos de 8 cm (corría el marco hasta 8 cm);
+  - el driver subía la velocidad mínima sin subir el giro (la curva salía 2.5 veces más abierta);
+  - la arista del marco a veces quedaba borrada y la esquina del perro la enganchaba al girar:
+    margen de 7 cm en la huella.
+
+  | Prueba (Nav2 real, perro simulado con lidar ralo, puerta de 72 cm) | Antes | Ahora |
+  |---|---|---|
+  | Meta directa al pasillo, 6 veces: cruza sin chocar | 2 de 6 | 6 de 6 |
 - **La ruta (línea verde en RViz) cruza una pared en vez de salir por la puerta:** el costmap
   global usa las paredes del SLAM (`/go2/mapa_paredes`, filtradas por el gestor: sin puntitos de
   ruido y con los huecos de 5 cm cerrados) más lo que ve el lidar. Si pasa igual, la pared

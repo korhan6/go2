@@ -13,6 +13,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>unitree_api</exec_depend>
   <exec_depend>unitree_go</exec_depend>

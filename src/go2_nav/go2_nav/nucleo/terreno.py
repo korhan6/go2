@@ -495,3 +495,65 @@ def _rellenar_huecos(rangos, hueco_max):
         for k in range(1, hueco + 1):
             out[(i0 + k) % n] = r0 + (r1 - r0) * k / (hueco + 1)
     return out
+
+
+# ---------------------------------------------------------------- caidas para el mapa de costos
+def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, cerca_cuerpo=0.45):
+    """Celdas de CAIDA (escalon hacia abajo, hueco) alrededor del perro, para marcarlas como
+    obstaculo en el mapa de costos.
+
+    bajo  Nx3 (x, y, h) puntos por debajo del suelo (h < 0), de las ultimas nubes (odom)
+    piso  Mx2 (x, y) puntos de suelo de las ultimas nubes
+    Una celda es caida si tiene >= min_pts puntos bajo el suelo que forman una SUPERFICIE (poca
+    dispersion de altura: un escalon, el piso de abajo; no reflejos sueltos) y ningun punto de
+    suelo. Ademas, la SOMBRA del borde: el L1 va a ~30 cm del suelo y no ve el primer escalon
+    pegado al borde, asi que entre el ultimo suelo visto y la caida queda una franja sin nada.
+    Antes esa franja quedaba "libre" y Nav2 llevaba al perro hasta el filo. Ahora se marca: desde
+    cada celda de caida hacia el perro, las celdas SIN suelo (hasta sombra_max m) tambien son
+    caida, hasta encontrar suelo. Nunca a menos de cerca_cuerpo m del centro del perro.
+    Devuelve Kx2 centros de celda (odom).
+    """
+    n = int(round(2 * R / C))
+    vacio = np.zeros((0, 2), np.float32)
+    if len(bajo) == 0:
+        return vacio
+
+    def idx(px, py):
+        i = np.floor((px - x + R) / C).astype(np.int64)
+        j = np.floor((py - y + R) / C).astype(np.int64)
+        return i, j, (i >= 0) & (i < n) & (j >= 0) & (j < n)
+
+    hay_suelo = np.zeros((n, n), bool)
+    if len(piso):
+        i, j, ok = idx(piso[:, 0], piso[:, 1])
+        hay_suelo[i[ok], j[ok]] = True
+    i, j, ok = idx(bajo[:, 0], bajo[:, 1])
+    cel = i[ok] * n + j[ok]
+    hb = bajo[ok, 2].astype(np.float64)
+    cnt = np.bincount(cel, minlength=n * n)
+    s1 = np.bincount(cel, weights=hb, minlength=n * n)
+    s2 = np.bincount(cel, weights=hb * hb, minlength=n * n)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        var = s2 / np.maximum(cnt, 1) - (s1 / np.maximum(cnt, 1)) ** 2
+    caida = ((cnt >= min_pts) & (var < 0.03 ** 2)).reshape(n, n) & ~hay_suelo
+    if not caida.any():
+        return vacio
+    # sombra del borde: de cada celda de caida hacia el perro, mientras no haya suelo
+    ii, jj = np.nonzero(caida)
+    cx = (ii + 0.5) * C - R
+    cy = (jj + 0.5) * C - R
+    d = np.hypot(cx, cy)
+    ux, uy = -cx / np.maximum(d, 1e-6), -cy / np.maximum(d, 1e-6)
+    vivo = np.ones(len(ii), bool)
+    sombra = np.zeros((n, n), bool)
+    for s in np.arange(C / 2, sombra_max + 1e-6, C / 2):
+        px, py = cx + ux * s, cy + uy * s
+        vivo &= (d - s) > cerca_cuerpo
+        a = np.floor((px + R) / C).astype(np.int64).clip(0, n - 1)
+        b = np.floor((py + R) / C).astype(np.int64).clip(0, n - 1)
+        vivo &= ~hay_suelo[a, b]
+        if not vivo.any():
+            break
+        sombra[a[vivo], b[vivo]] = True
+    ii, jj = np.nonzero(caida | sombra)
+    return np.c_[x - R + (ii + 0.5) * C, y - R + (jj + 0.5) * C].astype(np.float32)
