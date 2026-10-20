@@ -47,6 +47,8 @@ API_STOPMOVE = 1003
 API_STANDUP = 1004
 API_BALANCESTAND = 1002
 API_FREEWALK = 2045
+API_BODYHEIGHT = 1013          # altura del cuerpo RELATIVA a la normal, {"data": m}, de -0.18 a +0.03
+ALTURA_MIN, ALTURA_MAX = -0.18, 0.03
 EVITA_SET, EVITA_GET = 1001, 1002          # servicio "obstacles_avoid" de Unitree
 
 
@@ -105,6 +107,13 @@ class Driver(Node):
         self.create_subscription(Twist, "cmd_vel_prioridad", self.cb_cmd_prio, 10)
         self.create_subscription(String, "/go2/marcha", self.cb_marcha, 10)
         self.create_subscription(Response, "/api/obstacles_avoid/response", self.cb_evita, 10)
+        # altura del cuerpo en la escalera: bajando en reversa el L1 (bajo el menton) rozaba el borde
+        # del escalon de arriba cuando el perro se agachaba. Se sube el cuerpo con BodyHeight y se
+        # comprueba con la respuesta del perro y la altura medida (SportModeState.body_height)
+        self.altura_esc = p("altura_escaleras", 0.03).value
+        self.create_subscription(Response, "/api/sport/response", self.cb_sport_resp, 10)
+        self.altura_pedida, self.altura_resp, self.altura_info = 0.0, None, ""
+        self.rid_altura = None
         self.create_subscription(String, "/go2/limpiador_estado", self.cb_holg, 1)
         # sin nubes del lidar Nav2 maneja a ciegas (y el TF del mapa se atrasa): pausa
         self.create_subscription(Header, "/go2/lidar_vivo", self.cb_vivo, 5)
@@ -321,17 +330,55 @@ class Driver(Node):
 
     def cb_marcha(self, m):
         """Marcha para escaleras (la pide go2_escaleras). Firmware >= 1.1.7 (MCF): FreeWalk es la
-        marcha agil que sube y baja escalones."""
+        marcha agil que sube y baja escalones. Ademas: 'altura X' (m, relativa) para probar."""
         if m.data == "escaleras_off":
             self.en_escalera = False
+            if self.altura_pedida:
+                self.poner_altura(0.0)
         if m.data == "escaleras_on":
             self.en_escalera = True
-            self.get_logger().info("marcha de escaleras: FreeWalk")
+            self.get_logger().info("marcha de escaleras: FreeWalk, cuerpo %+.0f cm" % (100 * self.altura_esc))
             self._req(API_FREEWALK)
+            # despues del cambio de marcha (que puede volver la altura a la normal)
+            threading.Timer(0.6, lambda: self.poner_altura(self.altura_esc)).start()
         elif m.data == "balancear":
             self._req(API_BALANCESTAND)
             if self.marcha_libre:
                 threading.Timer(0.3, lambda: self._req(API_FREEWALK)).start()
+            if self.en_escalera:
+                threading.Timer(0.9, lambda: self.poner_altura(self.altura_esc)).start()
+        elif m.data.startswith("altura"):
+            try:
+                self.poner_altura(float(m.data.split()[1]))
+            except (IndexError, ValueError):
+                pass
+
+    def poner_altura(self, h):
+        """Pide la altura del cuerpo (relativa) y despues de 1.5 s dice si el perro la tomo."""
+        h = max(ALTURA_MIN, min(ALTURA_MAX, float(h)))
+        antes = self.altura
+        self.altura_pedida, self.altura_resp = h, None
+        self.rid_altura = self.rid + 1
+        self._req(API_BODYHEIGHT, {"data": h}, sin_respuesta=False)
+
+        def revisar():
+            ahora = self.altura
+            cambio = (ahora - antes) if (ahora is not None and antes is not None) else None
+            if self.altura_resp is None:
+                r = "el perro no respondio"
+            elif self.altura_resp == 0:
+                r = "el perro la ACEPTO"
+            else:
+                r = "el perro la RECHAZO (codigo %s: este firmware/marcha no la permite)" % self.altura_resp
+            self.altura_info = "altura %+.0f cm: %s%s" % (
+                100 * h, r, "" if cambio is None else ", la altura medida cambio %+.1f cm (%.2f -> %.2f m)"
+                % (100 * cambio, antes, ahora))
+            self.get_logger().info(self.altura_info)
+        threading.Timer(1.5, revisar).start()
+
+    def cb_sport_resp(self, m):
+        if m.header.identity.api_id == API_BODYHEIGHT and m.header.identity.id == self.rid_altura:
+            self.altura_resp = int(m.header.status.code)
 
     # ------------------------------------------------------------------ salida
     def _req(self, api, parametro=None, sin_respuesta=True, pub=None):
@@ -404,7 +451,7 @@ class Driver(Node):
              "orden": [round(v, 2) for v in self.ultima_orden], "ordenes_minimas": self.muertas,
              "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
-             "pausas_lidar": self.pausas_lidar}
+             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info}
         self.n_odom = 0
         self.envios = 0
         self.muertas = 0

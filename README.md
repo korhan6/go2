@@ -254,6 +254,17 @@ cada 0.6 s hasta 0.45 m/s, solo con espacio libre en esa dirección) y vuelve a 
 avanza. En `go2 ver` sale "empujando X m/s". Topes: `v_escalera_max` (go2_escaleras) y
 `v_empuje_max` (go2_driver).
 
+### Altura del cuerpo en la escalera
+Bajando en reversa, el L1 (debajo del mentón) podía rozar el borde del escalón de arriba si el
+perro se agachaba. Con la marcha de escaleras el driver sube el cuerpo **+3 cm** (orden
+BodyHeight de Unitree, máximo +3 cm) y al terminar lo vuelve a la normal. Para comprobar en
+plano que tu firmware la acepta:
+```
+go2 altura 3     # "el perro la ACEPTO, la altura medida cambio +3.0 cm" = funciona
+go2 altura 0     # vuelve a la normal
+```
+Si dice "RECHAZO", tu firmware no la permite en esa marcha y no hace nada (no es peligroso).
+
 ### Subir una escalera (lo más seguro)
 Llévalo (con `go2 manejar` o el control) hasta 0.5–1 m delante del primer escalón, mirándolo de
 frente y centrado, sal de `manejar` con x, y:

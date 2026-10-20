@@ -33,6 +33,8 @@
     go2 lanzar mapa:=casa rviz:=true   3) otro dia: navegar en ese mapa (no lo cambia)
     go2 ir A | go2 casa | "2D Goal Pose" en RViz
   go2 mapas             mapas guardados
+  go2 altura [cm]       sube/baja el cuerpo (de -18 a +3 cm; 0 = normal) y dice si el perro lo acepta.
+                        En la escalera se sube solo (altura_escaleras del driver, +3 cm)
   go2 calibrar          gira 2 vueltas y aprende los puntos fantasma del propio perro
   go2 levantar          pone al perro de pie
   go2 log               ultimos mensajes
@@ -417,6 +419,32 @@ def nav2_avisos(nodo, args):
     return 0
 
 
+def altura(nodo, args):
+    """Prueba la orden de altura del cuerpo del Go2 (en plano)."""
+    try:
+        cm = float(args[0]) if args else 3.0
+    except ValueError:
+        print("uso: go2 altura 3   (cm, de -18 a +3; 0 = normal)")
+        return 1
+    D = {}
+    nodo.create_subscription(String, "/go2/driver_estado", lambda m: D.update(json.loads(m.data)), 1)
+    pub = nodo.create_publisher(String, "/go2/marcha", 10)
+    t = time.monotonic()
+    while time.monotonic() - t < 1.5:
+        rclpy.spin_once(nodo, timeout_sec=0.1)
+    if not D:
+        print("no llega /go2/driver_estado: go2 lanzar no esta corriendo")
+        return 1
+    previo = D.get("altura_info")
+    pub.publish(String(data="altura %.3f" % (cm / 100.0)))
+    print("pido altura del cuerpo %+.0f cm (mira al perro)..." % cm)
+    t = time.monotonic()
+    while time.monotonic() - t < 5.0 and D.get("altura_info") in (None, "", previo):
+        rclpy.spin_once(nodo, timeout_sec=0.1)
+    print(D.get("altura_info") or "sin respuesta del driver")
+    return 0
+
+
 def avisos(L, D):
     a = []
     if L and L.get("calibrado") is False:
@@ -493,6 +521,8 @@ def main():
             return manejar(nodo)
         if args[0] == "calibrar_mov":
             return calibrar_mov(nodo)
+        if args[0] == "altura":
+            return altura(nodo, args[1:])
         if args[0] == "costmap":
             return costmap(nodo, args[1:])
         if args[0] == "nav2":
