@@ -15,6 +15,7 @@ import os
 import math
 import time
 
+import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -116,7 +117,12 @@ class PerroSim(Node):
             self.respuesta = tuple(float(v) for v in os.environ.get("GO2_SIM_RESPUESTA", "1,0,1").split(","))
         except ValueError:
             self.respuesta = (1.0, 0.0, 1.0)
-        self.get_logger().info("Go2 simulado en el mundo '%s' (ruido real: %s)" % (nombre, ruido))
+        # obstaculos FALSOS de un instante, como los del L1 real (rebotes, vidrios, polvo): GO2_SIM_MOTAS
+        # por segundo, cada uno 3-6 puntos juntos a la altura de un obstaculo que duran 0.2-0.5 s. Con
+        # esto el mapa de costos se llenaba de puntitos como en la casa (pruebas/prueba_puerta.py)
+        self.motas = float(os.environ.get("GO2_SIM_MOTAS", "0") or 0)
+        self.motas_vivas, self.t_motas = [], None
+        self.get_logger().info("Go2 simulado en el mundo '%s' (ruido real: %s, motas/s: %s)" % (nombre, ruido, self.motas))
 
     def stamp_perro(self):
         t = time.time() + DESFASE_RELOJ
@@ -153,7 +159,24 @@ class PerroSim(Node):
         for _t, xyz in self.r.nubes_nuevas():
             if 0 < self.puntos_nube < len(xyz):
                 xyz = xyz[self.r.rng.choice(len(xyz), self.puntos_nube, replace=False)]
+            if self.motas > 0:
+                xyz = np.concatenate([xyz, self.puntos_motas()]).astype(np.float32)
             self.pub_nube.publish(crear_nube(xyz, "odom", self.stamp_perro()))
+
+    def puntos_motas(self):
+        r, t = self.r.rng, time.monotonic()
+        dt = 0.0 if self.t_motas is None else t - self.t_motas
+        self.t_motas = t
+        x, y, _z, yaw = self.r.pose()[:4]
+        g = self.r.m.altura(self.r.x, self.r.y)
+        self.motas_vivas = [m for m in self.motas_vivas if m[3] > t]
+        for _ in range(r.poisson(self.motas * dt)):
+            a, d = yaw + r.uniform(-1.6, 1.6), r.uniform(0.6, 3.0)
+            self.motas_vivas.append((x + d * math.cos(a), y + d * math.sin(a), g + r.uniform(0.15, 0.45),
+                                     t + r.uniform(0.2, 0.5)))
+        pts = [np.c_[mx + r.normal(0, 0.03, k), my + r.normal(0, 0.03, k), mz + r.normal(0, 0.02, k)]
+               for mx, my, mz, _ in self.motas_vivas for k in [int(r.integers(3, 7))]]
+        return np.concatenate(pts) if pts else np.zeros((0, 3))
 
     def pub_estado(self):
         x, y, z, yaw, pitch, roll, _ = self.r.pose()

@@ -144,6 +144,34 @@ def esperar(s, cond=lambda: False):
         rclpy.spin_once(n, timeout_sec=0.1)
 
 
+def preparar_falsos():
+    """Celdas donde un obstaculo es de verdad: a <= 15 cm de una pared o de un desnivel del mundo."""
+    from scipy import ndimage
+    from go2_nav import mundo as M
+    m, _ = M.mundo_puerta()
+    escalon = ndimage.maximum_filter(m.suelo, size=3) - ndimage.minimum_filter(m.suelo, size=3) > 0.05
+    return m, ndimage.binary_dilation(m.pared | escalon, iterations=3)
+
+
+MUNDO, DE_VERDAD = preparar_falsos()
+falsos = []
+
+
+def contar_falsos(cm):
+    """Celdas LETALES del costmap local lejos de toda pared: los "puntitos" que tapan el piso."""
+    import numpy as np
+    if cm is None:
+        return
+    W, H, r = cm.info.width, cm.info.height, cm.info.resolution
+    d = np.asarray(cm.data, np.int16).reshape(H, W)
+    ii, jj = np.nonzero(d >= 100)
+    x = cm.info.origin.position.x + (jj + 0.5) * r
+    y = cm.info.origin.position.y + (ii + 0.5) * r
+    i, j = (y / 0.05).astype(int), (x / 0.05).astype(int)
+    dentro = (i >= 0) & (i < DE_VERDAD.shape[0]) & (j >= 0) & (j < DE_VERDAD.shape[1])
+    falsos.append(int((~DE_VERDAD[i[dentro], j[dentro]]).sum()))
+
+
 cruzo, t_cruce = False, None
 hist_cm = __import__("collections").deque(maxlen=3)        # (verdad, costmap local) cada 0.5 s
 try:
@@ -170,6 +198,7 @@ try:
         esperar(0.5)
         y_max = max(y_max, ver.get("y", 0.0))
         medir_desvio()
+        contar_falsos(mapas.get("/local_costmap/costmap"))
         hist_cm.append((dict(ver), mapas.get("/local_costmap/costmap")))
         if ver.get("choques") and "choque" not in mapas:       # el costmap ~1 s ANTES del primer choque
             mapas["choque"] = hist_cm[0]
@@ -194,6 +223,9 @@ try:
         ds = sorted(desvios)
         print("DESVIO de la ruta (linea verde): promedio %.2f m, 90%% del tiempo < %.2f m, maximo %.2f m"
               % (sum(ds) / len(ds), ds[int(0.9 * (len(ds) - 1))], ds[-1]))
+    if falsos:
+        print("PUNTITOS FALSOS en el costmap local (celdas letales lejos de toda pared): promedio %.1f, "
+              "maximo %d" % (sum(falsos) / len(falsos), max(falsos)))
     esperar(1.0)
     if "choque" in mapas:
         v0, cm = mapas["choque"]
