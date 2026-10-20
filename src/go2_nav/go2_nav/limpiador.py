@@ -402,13 +402,15 @@ class Limpiador(Node):
         cerca = (np.abs(fx) < R) & (np.abs(fy) < R)
         bajo = cerca & (h < -self.caida_min)
         piso = cerca & (np.abs(h) < 0.06)
+        algo = cerca & (h > -0.05) & (h < 1.0)        # suelo (aunque mal medido de cerca) u obstaculos
         # alturas absolutas (odom): con otro suelo estimado se recalculan respecto del actual
-        self.hist_caidas.append((xyz[bajo].copy(), xyz[piso, :2].copy()))
-        B = np.concatenate([b for b, _ in self.hist_caidas])
-        P = np.concatenate([p for _, p in self.hist_caidas])
+        self.hist_caidas.append((xyz[bajo].copy(), xyz[piso, :2].copy(), xyz[algo, :2].copy()))
+        B = np.concatenate([b for b, _, _ in self.hist_caidas])
+        P = np.concatenate([p for _, p, _ in self.hist_caidas])
+        A = np.concatenate([a for _, _, a in self.hist_caidas])
         hb = B[:, 2] - suelo
         B = B[hb < -self.caida_min]
-        celdas = caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], P, x, y, R=R)
+        celdas = caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], P, x, y, R=R, algo=A)
         if len(celdas) == 0:
             return np.zeros((0, 3), np.float32)
         out = [np.c_[celdas[:, 0] + dx, celdas[:, 1] + dy, np.full(len(celdas), suelo + 0.25)]

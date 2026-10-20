@@ -51,31 +51,9 @@ def mundo_dos_puertas():
     return m, (1.0, 3.5, 0.0)
 
 
-def mundo_puerta():
-    """Como la casa del usuario (foto del 19-oct): cuarto con el perro mirando una puerta de
-    72 cm (la hoja abierta hacia adentro, pegada al marco izquierdo); detras, un pasillo; a la
-    izquierda del pasillo, una escalera que BAJA 1.19 m (7 escalones de 17 cm); al fondo, un bano."""
-    m = M.Mundo(10.0, 7.0)
-    m.rect_pared(0.0, 4.0, 10.0, 4.1)            # pared del cuarto (arriba)
-    m.rect_libre(4.6, 4.0, 5.32, 4.1)            # la puerta: 72 cm
-    m.rect_pared(4.55, 3.2, 4.6, 4.0)            # la hoja de la puerta, abierta hacia el cuarto
-    m.rect_pared(3.0, 0.0, 3.1, 4.0)             # pared izquierda del cuarto
-    m.rect_pared(8.0, 0.0, 8.1, 4.0)             # pared derecha del cuarto
-    m.rect_pared(3.2, 1.4, 4.0, 2.4)             # mesa
-    # escalera que baja hacia -x desde el borde x = 4.2 (a la izquierda saliendo por la puerta)
-    m.escalera_x(2.52, 4.1, 5.0, 6, 0.28, 0.17, z0=-1.19)
-    m.rect_altura(0.1, 4.1, 2.52, 5.0, -1.19)    # piso de abajo
-    m.rect_pared(0.0, 5.0, 4.2, 5.05)            # baranda / pared del lado de la escalera
-    m.rect_pared(0.0, 5.05, 4.2, 7.0)
-    m.rect_pared(4.2, 5.3, 10.0, 5.35)           # pared del fondo del pasillo
-    m.rect_libre(5.6, 5.3, 6.3, 5.35)            # puerta del bano (70 cm)
-    m.rect_pared(7.2, 5.35, 7.25, 7.0)           # el bano: 3 x 1.6 m
-    return m, (5.0, 2.2, math.pi / 2)
-
-
 def elegir(nombre):
     if nombre == "puerta":
-        return mundo_puerta()
+        return M.mundo_puerta()
     if nombre == "pasillo":
         return mundo_pasillo()
     if nombre == "dos_puertas":

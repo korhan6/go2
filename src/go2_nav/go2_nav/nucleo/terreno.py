@@ -421,8 +421,14 @@ def analizar_subida(fx, fy, h):
                 continue
             if piso is None:                 # el suelo delante (con su ruido de +-5 cm)
                 if abs(v) > 0.08:
-                    break
-                piso = v
+                    # pegado al primer escalon el suelo de delante queda bajo la cabeza (no se ve):
+                    # si lo primero que se ve, cerca, es un nivel de escalon, el suelo es el que pisa
+                    if 0.08 <= v <= 0.26 and X0 + i * PASO <= 0.75:
+                        piso = 0.0
+                    else:
+                        break
+                else:
+                    piso = v
             base = niveles[-1][0] if niveles else piso
             if abs(v - base) <= 0.055:
                 if niveles:
@@ -498,19 +504,23 @@ def _rellenar_huecos(rangos, hueco_max):
 
 
 # ---------------------------------------------------------------- caidas para el mapa de costos
-def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, cerca_cuerpo=0.45):
+def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, cerca_cuerpo=0.60, algo=None):
     """Celdas de CAIDA (escalon hacia abajo, hueco) alrededor del perro, para marcarlas como
     obstaculo en el mapa de costos.
 
     bajo  Nx3 (x, y, h) puntos por debajo del suelo (h < 0), de las ultimas nubes (odom)
     piso  Mx2 (x, y) puntos de suelo de las ultimas nubes
+    algo  Kx2 (x, y) TODOS los puntos que no estan por debajo del suelo (suelo, suelo mal medido
+          de cerca, obstaculos): la sombra solo cruza celdas donde no se ve NADA
     Una celda es caida si tiene >= min_pts puntos bajo el suelo que forman una SUPERFICIE (poca
     dispersion de altura: un escalon, el piso de abajo; no reflejos sueltos) y ningun punto de
     suelo. Ademas, la SOMBRA del borde: el L1 va a ~30 cm del suelo y no ve el primer escalon
     pegado al borde, asi que entre el ultimo suelo visto y la caida queda una franja sin nada.
     Antes esa franja quedaba "libre" y Nav2 llevaba al perro hasta el filo. Ahora se marca: desde
     cada celda de caida hacia el perro, las celdas SIN suelo (hasta sombra_max m) tambien son
-    caida, hasta encontrar suelo. Nunca a menos de cerca_cuerpo m del centro del perro.
+    caida, hasta encontrar algo. Nunca a menos de cerca_cuerpo m del centro del perro (0.60 =
+    24 cm del hocico): antes llegaba a 9 cm, y con el suelo de cerca medido unos cm alto (no
+    "suelo") la marca quedaba pegada al hocico y frenaba todo ("algo delante a 3 cm").
     Devuelve Kx2 centros de celda (odom).
     """
     n = int(round(2 * R / C))
@@ -527,6 +537,10 @@ def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, c
     if len(piso):
         i, j, ok = idx(piso[:, 0], piso[:, 1])
         hay_suelo[i[ok], j[ok]] = True
+    hay_algo = hay_suelo.copy()
+    if algo is not None and len(algo):
+        i, j, ok = idx(algo[:, 0], algo[:, 1])
+        hay_algo[i[ok], j[ok]] = True
     i, j, ok = idx(bajo[:, 0], bajo[:, 1])
     cel = i[ok] * n + j[ok]
     hb = bajo[ok, 2].astype(np.float64)
@@ -551,7 +565,7 @@ def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, c
         vivo &= (d - s) > cerca_cuerpo
         a = np.floor((px + R) / C).astype(np.int64).clip(0, n - 1)
         b = np.floor((py + R) / C).astype(np.int64).clip(0, n - 1)
-        vivo &= ~hay_suelo[a, b]
+        vivo &= ~hay_algo[a, b]
         if not vivo.any():
             break
         sombra[a[vivo], b[vivo]] = True

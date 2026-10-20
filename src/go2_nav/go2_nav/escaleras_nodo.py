@@ -189,17 +189,37 @@ class Escaleras(Node):
             d_ob, d_ca, d_hu = h["adelante"]
             libre = min(d_ca, d_hu, d_ob)
             if libre > d_min:
-                v = 0.07 if libre > d_min + 0.15 else 0.04
+                # el Go2 no camina a 0.07 m/s (pisa en el sitio): arranca a 0.10 y, si no avanza,
+                # sube de a poco hasta 0.25 m/s (mas despacio cerca del borde)
+                v = self._v_acercar(e, ahora, (x, y), 0.25 if libre > d_min + 0.20 else 0.15)
                 self.mover(v, 0.0, max(-0.3, min(0.3, 1.2 * err)))
                 return
+            e["freno"] = ("algo delante a %.0f cm" % (100 * d_ob) if d_ob <= d_min else
+                          "borde/caida a %.0f cm" % (100 * d_ca) if d_ca <= d_min else
+                          "el suelo se acaba a %.0f cm (sin nada visible)" % (100 * d_hu))
         self.mover(0.0, 0.0, 0.0)
         if ahora - e["t_quieto"] > 14.0:
             self.espera = None
             visto = self.detector.motivo_subida if e["tipo"] == "subir" else self.detector.motivo
-            motivo = "no confirme la escalera de %s: %s" % (e["tipo"], visto or "no la veo")
+            motivo = "no confirme la escalera de %s: %s%s" % (
+                e["tipo"], visto or "no la veo",
+                " | me frene por: %s" % e["freno"] if e.get("freno") else
+                " | me acerque %.2f m sin verla" % avance)
             self.resultado = {"ok": False, "motivo": motivo, "tipo": e["tipo"], "sin_empezar": True,
                               "z": z, "pose_odom": [x, y, yaw]}
             self.log(motivo)
+
+    @staticmethod
+    def _v_acercar(e, ahora, p, v_max):
+        """Velocidad para acercarse: 0.10 m/s y +0.03 cada 0.5 s si avanza menos del 40 %."""
+        g = e.setdefault("emp", {"v": 0.10, "t": ahora, "p": p})
+        dt = ahora - g["t"]
+        if dt >= 0.5:
+            real = math.hypot(p[0] - g["p"][0], p[1] - g["p"][1]) / dt
+            if real < 0.4 * g["v"]:
+                g["v"] = min(0.25, g["v"] + 0.03)
+            g["t"], g["p"] = ahora, p
+        return min(g["v"], v_max)
 
     # ------------------------------------------------------------------ ordenes
     def srv(self, req, res):

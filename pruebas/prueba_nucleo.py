@@ -203,6 +203,13 @@ def prueba_empuje():
     print("   OK")
 
 
+def prueba_subir_pegado():
+    print("== subir con el hocico PEGADO al primer escalon (13 cm), como en la casa real")
+    res = correr("subir", 0.13)
+    assert res["ok"], res
+    print("   OK")
+
+
 def prueba_maniobras(cuales=("bajar", "subir")):
     print("== maniobras completas en el simulador (bajar = 180 y en reversa; subir = de frente)")
     for tipo in cuales:
@@ -320,6 +327,42 @@ def prueba_alinear():
     print("   OK")
 
 
+def prueba_borde():
+    print("== marca de caida en el mapa de costos: en el borde real, y nunca pegada al hocico")
+    import collections
+    m, _ = M.mundo_puerta()            # escalera que baja hacia -x desde x = 4.2
+    for d_hocico in (0.6, 0.45):
+        r = M.RobotSim(m, x=4.2 + terreno.LARGO2 + d_hocico, y=4.55, yaw=math.pi, ruido_real=True)
+        hist, mas = collections.deque(maxlen=6), []
+        for k in range(15):
+            r.dormir(0.1)
+            for _t, xyz in r.nubes_nuevas():
+                px, py, pz, yw, *_ = r.pose()
+                suelo = pz - 0.30
+                xyz = terreno.corregir_cerca(xyz, px, py, yw, (0.14, 0.19))
+                h = xyz[:, 2] - suelo
+                hist.append((xyz[h < -0.12], xyz[np.abs(h) < 0.06][:, :2], xyz[(h > -0.05) & (h < 1.0)][:, :2]))
+                B = np.concatenate([b for b, _, _ in hist])
+                cel = terreno.caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], np.concatenate([p for _, p, _ in hist]),
+                                             px, py, algo=np.concatenate([a for _, _, a in hist]))
+                sel = cel[(np.abs(cel[:, 1] - 4.55) < 0.2) & (cel[:, 0] < 4.6)] if len(cel) else cel
+                if k > 5 and len(sel):
+                    mas.append(sel[:, 0].max() + 0.05 - 4.2)
+        print("   hocico a %.2f m del borde: caida marcada en %d de %d nubes, a %+.2f m del borde real"
+              % (d_hocico, len(mas), 9, max(mas) if mas else float("nan")))
+        assert mas and abs(max(mas)) <= 0.10, "la caida tiene que quedar en el borde (+-10 cm)"
+    # suelo de cerca medido 8 cm ALTO (L1 con otro error de cerca) y una caida real a 1-1.5 m
+    x, y = 0.0, 0.0
+    algo = np.array([[fx, fy] for fx in np.arange(0.40, 0.95, 0.05) for fy in np.arange(-0.6, 0.65, 0.05)])
+    piso = np.array([[fx, fy] for fx in np.arange(0.95, 1.0, 0.05) for fy in np.arange(-0.6, 0.65, 0.05)])
+    bajo = np.array([[fx, fy, -0.5] for fx in np.arange(1.0, 1.5, 0.02) for fy in np.arange(-0.2, 0.2, 0.02)])
+    cel = terreno.caidas_rejilla(bajo, piso, x, y, algo=algo)
+    cerca = cel[cel[:, 0] < 0.9] if len(cel) else cel
+    print("   suelo de cerca medido 8 cm alto: celdas de caida marcadas a menos de 0.9 m: %d" % len(cerca))
+    assert len(cerca) == 0, "el suelo mal medido no puede volverse caida"
+    print("   OK")
+
+
 def prueba_exploracion():
     print("== exploracion: un cuarto de 4 x 4 con una puerta de 0.8 m")
     v = EX.Vista()
@@ -364,6 +407,10 @@ if __name__ == "__main__":
         prueba_maniobras()
     if que in ("todo", "empuje"):
         prueba_empuje()
+    if que in ("todo", "borde"):
+        prueba_borde()
+    if que in ("todo", "pegado"):
+        prueba_subir_pegado()
     if que in ("bajar", "subir"):
         correr(que, verbose=True)
     print("LISTO")
