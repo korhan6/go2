@@ -208,7 +208,21 @@ def prueba_paredes():
     pared = EX.paredes_slam(mapa)
     assert not pared[10, 10], "un puntito de ruido no puede ser pared"
     assert pared[30, 6:22].all(), "la pared punteada tiene que quedar continua"
-    assert not pared[30, 25:35].any(), "la puerta tiene que seguir abierta (solo 5 cm menos por lado)"
+    assert not pared[30, 25:35].any(), "la puerta tiene que seguir abierta"
+    print("   OK")
+    print("== huecos mas angostos que el perro (40 cm) se cierran; las puertas no")
+    g = np.zeros((80, 80), np.int8)
+    g[40, 5:30] = 100; g[40, 36:75] = 100          # pared con una rendija de 30 cm (6 celdas)
+    g[60, 5:20] = 100; g[60, 34:75] = 100          # pared con una puerta de 70 cm (14 celdas)
+    for c in (10, 15, 20):                         # patas de mesa a 25 cm (5 celdas) entre si
+        g[20, c] = 100; g[21, c] = 100
+    mapa = SimpleNamespace(data=g.ravel().tolist(), info=SimpleNamespace(height=80, width=80, resolution=0.05,
+                           origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0))))
+    pared = EX.paredes_slam(mapa, largo_min=2)
+    assert pared[40, 30:36].all(), "la rendija de 30 cm tiene que cerrarse"
+    assert not pared[60, 21:33].any(), "la puerta de 70 cm tiene que seguir abierta"
+    assert pared[20, 10:21].all(), "entre patas de mesa a 25 cm no se pasa: tiene que quedar cerrado"
+    assert not pared[30, :].any() and not pared[50, :].any(), "el cierre no puede crecer hacia los costados"
     print("   OK")
     print("== meta de respaldo (sin camino por suelo visto): rodea la pared, no la cruza")
     v = EX.Vista()

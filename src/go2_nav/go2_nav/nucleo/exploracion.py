@@ -99,12 +99,47 @@ class Vista(object):
         return g, x0 - VRES / 2, y0 - VRES / 2
 
 
-def paredes_slam(mapa, largo_min=4, engordar=0):
+HUECO_MIN = 0.40     # m: un hueco entre obstaculos mas angosto que esto se cierra (el perro mide
+                     # 31 cm de ancho; por ahi no pasa). Las puertas (>= 60 cm) quedan abiertas
+
+
+def cerrar_huecos(occ, res, hueco=HUECO_MIN, direcciones=16):
+    """Cierra los huecos de menos de 'hueco' m entre obstaculos: entre patas de una mesa, entre un
+    mueble y la pared, o los agujeros de una pared vista a medias. Sin esto el planificador
+    trazaba la ruta por una rendija de 10 cm que el lidar ralo dejaba abierta.
+
+    Una celda libre es hueco si, mirando en dos direcciones OPUESTAS (16 direcciones, cada 22.5
+    grados), hay obstaculo de los dos lados y la suma de las dos distancias es menor que 'hueco'.
+    Asi se une lo que esta mas cerca que el ancho del perro; una esquina de cuarto (obstaculo de
+    un solo lado) o una puerta de 60 cm no se tocan."""
+    K = int(np.floor(hueco / res))
+    if K < 2 or not occ.any():
+        return occ
+    H, W = occ.shape
+    p = np.pad(occ, K + 1)
+    angs = np.arange(direcciones // 2) * (np.pi / (direcciones // 2))
+    hueco_m = np.zeros_like(occ)
+    for a in angs:
+        dist = []
+        for sgn in (1, -1):
+            d = np.full(occ.shape, np.inf)
+            for k in range(1, K + 1):
+                di = int(round(sgn * k * np.sin(a)))
+                dj = int(round(sgn * k * np.cos(a)))
+                v = p[K + 1 + di:K + 1 + di + H, K + 1 + dj:K + 1 + dj + W]
+                d = np.where(np.isinf(d) & v, k, d)
+            dist.append(d)
+        hueco_m |= (dist[0] + dist[1]) <= K
+    return occ | hueco_m
+
+
+def paredes_slam(mapa, largo_min=4, engordar=0, hueco=HUECO_MIN):
     """Paredes del mapa de slam_toolbox (OccupancyGrid) como mascara bool (alto x ancho).
 
     1) une los puntos de una misma pared separados por 1 celda (una pared vista "punteada");
     2) quita los pedazos de menos de largo_min celdas (20 cm): un puntito de ruido, un rebote;
-    3) engorda 'engordar' celdas (por defecto 0: el inflado de Nav2 ya da la distancia; engordar
+    3) cierra los huecos de menos de 'hueco' m (cerrar_huecos): por ahi el perro no pasa;
+    4) engorda 'engordar' celdas (por defecto 0: el inflado de Nav2 ya da la distancia; engordar
        achicaba las puertas 10 cm y el planificador a veces no encontraba ruta por ellas).
     Lo desconocido NO es pared."""
     from scipy import ndimage
@@ -120,6 +155,9 @@ def paredes_slam(mapa, largo_min=4, engordar=0):
     tam[0] = 0
     # grosor real (sin el engorde del paso 1) + los huecos de 1 celda rellenados
     pared = (tam >= largo_min)[lab] & (occ | _huecos_de_una(occ))
+    # 3) huecos mas angostos que el perro: cerrados (rendijas entre patas de mesa, paredes a medias)
+    if hueco > 0:
+        pared = cerrar_huecos(pared, mapa.info.resolution, hueco)
     if engordar > 0 and pared.any():
         pared = ndimage.binary_dilation(pared, ocho, iterations=engordar)
     return pared

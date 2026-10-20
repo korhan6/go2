@@ -307,7 +307,15 @@ go2 sim mundo:=puerta puntos_sim:=2500      # lo mismo, para mirarlo en RViz
 
   | Prueba (Nav2 real, perro simulado con lidar ralo, puerta de 72 cm) | Antes | Ahora |
   |---|---|---|
-  | Meta directa al pasillo, 6 veces: cruza sin chocar | 2 de 6 | 6 de 6 |
+  | Meta directa al pasillo, 6 veces: cruza sin chocar | 2 de 6 | 6 de 6 (en 10–13 s) |
+  | Desvío de la línea verde (promedio por corrida) | — | 1–12 cm |
+- **Nav2 quiere mandarlo por una rendija (entre patas de mesa, un hueco en una pared vista a
+  medias):** el mapa de paredes que usa el planificador cierra todo hueco de menos de 40 cm
+  entre obstáculos (el perro mide 31 cm de ancho: por ahí no pasa). Las puertas (≥ 60 cm) quedan
+  abiertas. Es `HUECO_MIN` en `nucleo/exploracion.py`.
+- **El perro no sigue la línea verde:** en la prueba con Nav2 real se aparta 1–12 cm en promedio
+  (máximo 19 cm). Si en tu perro se aparta mucho más, el perro hace menos de lo que se le pide:
+  corre `go2 calibrar_mov` y después `go2 probar_mov` (tiene que dar 90–100 %).
 - **La ruta (línea verde en RViz) cruza una pared en vez de salir por la puerta:** el costmap
   global usa las paredes del SLAM (`/go2/mapa_paredes`, filtradas por el gestor: sin puntitos de
   ruido y con los huecos de 5 cm cerrados) más lo que ve el lidar. Si pasa igual, la pared

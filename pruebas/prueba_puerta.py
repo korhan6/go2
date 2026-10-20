@@ -19,7 +19,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
@@ -67,6 +67,23 @@ def validar(m, top):
         malos.append("%s: %s (%dx%d, res %s, frame %r)" % (top, ", ".join(errores), m.info.width, m.info.height,
                                                             m.info.resolution, m.header.frame_id))
     mapas[top] = m
+
+
+plan = {"p": None}
+desvios = []
+n.create_subscription(Path, "/plan", lambda m: plan.__setitem__("p", [(q.pose.position.x, q.pose.position.y)
+                                                                     for q in m.poses]), 1)
+
+
+def medir_desvio():
+    """Distancia del perro a la linea verde de RViz (/plan): cuanto se sale de la ruta."""
+    import math
+    pts = plan["p"]
+    if not pts or "x" not in ver or len(pts) < 2:
+        return
+    d = min(math.hypot(px - ver["x"], py - ver["y"]) for px, py in pts)
+    if d < 1.5:                     # (un plan viejo de otra meta no cuenta)
+        desvios.append(d)
 
 
 for top in ("/global_costmap/costmap", "/local_costmap/costmap", "/go2/mapa_paredes", "/map"):
@@ -152,6 +169,7 @@ try:
     while time.monotonic() - t0 < T_MAX:
         esperar(0.5)
         y_max = max(y_max, ver.get("y", 0.0))
+        medir_desvio()
         hist_cm.append((dict(ver), mapas.get("/local_costmap/costmap")))
         if ver.get("choques") and "choque" not in mapas:       # el costmap ~1 s ANTES del primer choque
             mapas["choque"] = hist_cm[0]
@@ -172,6 +190,10 @@ try:
     print("---- log del gestor\n" + (r.mensaje if r else ""))
     print("choques (x, y, yaw, vx, vy, t, marcha_escaleras): %s" % ver.get("donde"))
     print("mapas que Nav2 rechazaria: %s" % (malos or "ninguno"))
+    if desvios:
+        ds = sorted(desvios)
+        print("DESVIO de la ruta (linea verde): promedio %.2f m, 90%% del tiempo < %.2f m, maximo %.2f m"
+              % (sum(ds) / len(ds), ds[int(0.9 * (len(ds) - 1))], ds[-1]))
     esperar(1.0)
     if "choque" in mapas:
         v0, cm = mapas["choque"]
