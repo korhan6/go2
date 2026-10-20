@@ -121,9 +121,12 @@ morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
   lista de RViz, apagadas: prende "Huella del perro" si quieres verla. (Mallas y medidas:
   `unitreerobotics/unitree_ros`, licencia BSD-3, reducidas a 1.2 MB en `go2_nav/meshes`. Si no
   aparece el perro: `sudo apt install ros-jazzy-robot-state-publisher`.)
-- **Costos locales** (alrededor del perro, 5 veces por segundo; antes 2 y se veía atrasado):
-  celeste = el centro del perro no puede estar ahí, rojo/azul = más caro cuanto más cerca de algo.
-- **Costos globales** viene apagado (es por donde planifica la ruta). Prende "Costos globales" para verlo.
+- **Nube del lidar** (color = altura) y **Obstáculos** (cuadraditos naranjas): los naranjas son
+  **lo único que usa Nav2** para esquivar. Si un naranja no está, Nav2 no lo ve; si hay un naranja
+  donde no hay nada, es un obstáculo falso (mándame foto).
+- **El sombreado (costos locales y globales) viene apagado.** Nav2 lo arma solo con los
+  naranjas: celeste = el centro del perro no puede estar ahí, rojo/azul = más caro cuanto más cerca
+  de algo. Prende "Costos locales" para ver por dónde no puede ir.
 - Los fantasmas ya quitados (puntos rojos en la cabeza) vienen apagados.
 
 ## Piso brillante (cerámica): el piso es un espejo
@@ -137,8 +140,10 @@ pasado). Ahora:
 - **Una caída tiene que tener la sombra de un borde de verdad** entre el perro y ella (el reflejo
   del tablero de una mesa, que el lidar no ve directo, no la tiene: entre el perro y la mesa se ve
   piso), y estar delante o al costado (atrás el cuerpo tapa).
-- **El suelo que se ve BORRA** lo que estaba marcado ahí en los mapas de costos. Antes solo borraban
-  los rayos a los obstáculos y una marca falsa en medio del piso quedaba para siempre.
+- **Los mapas de costos usan SOLO la nube de ahora:** en cada vuelta se borran enteros (3.3 m
+  alrededor del L1) y se marca lo que el limpiador ve ahora. Antes guardaban cada marca hasta que un
+  rayo del L1 la cruzara: con el L1 ralo, un rebote de un instante quedaba para siempre, con 55 cm
+  de sombreado alrededor, y el piso se llenaba de puntitos (la casa, 20-oct).
 - Medido con el simulador de piso brillante (`pruebas/prueba_brillo.py`): mapa de costos local con
   57 celdas de obstáculo falsas → 0. Y el borde de una escalera de verdad se sigue marcando en su
   lugar (±4 cm).
@@ -153,10 +158,12 @@ pasado). Ahora:
 - En RViz, los puntos **rojos** son los fantasmas **ya eliminados**: no entran al mapa ni a la
   navegación. Están ahí solo para que veas qué se quitó.
 - `go2 explorar sin` = sin las 2 vueltas iniciales.
-- **Memoria de obstáculos:** la zona pegada al cuerpo, donde salen los fantasmas, se filtra. Para
-  que eso no esconda cosas reales, todo lo que el lidar ve a más de 35 cm del cuerpo se recuerda
-  y se sigue marcando cuando queda en esa zona ciega (hasta 20 s). Los fantasmas nunca aparecen
-  lejos del cuerpo, así que no entran a la memoria.
+- **Memoria de obstáculos:** como Nav2 solo usa la nube de ahora, el limpiador recuerda lo que el
+  L1 deja de ver. Lo que queda **fuera de su vista** (detrás de la cabeza, pegado al cuerpo, en la
+  zona de los fantasmas) se sigue marcando mientras esté a menos de 3 m (antes eran 20 s: trabado
+  en una puerta, olvidaba el marco y lo empujaba); detrás o al costado, si se vio al menos 1 s. Lo
+  que sigue **a la vista y ya no se ve** (un rebote, una persona que pasó) se olvida en 1.5 s. Solo entra a la
+  memoria lo visto a más de 35 cm del cuerpo: ahí nunca hay fantasmas.
 
 ## `go2 ver`
 ```
@@ -478,12 +485,18 @@ go2 sim mundo:=puerta puntos_sim:=2500      # lo mismo, para mirarlo en RViz
   global usa las paredes del SLAM (`/go2/mapa_paredes`, filtradas por el gestor: sin puntitos de
   ruido y con los huecos de 5 cm cerrados) más lo que ve el lidar. Si pasa igual, la pared
   todavía no está en el mapa del SLAM (no la vio de frente): la ruta se corrige sola cuando la ve.
-- **El mapa del SLAM sale como una estrella de rayos con puntitos negros:** el L1 es un lidar 3D
-  de pocos puntos, y el `/scan` que se le arma al SLAM quedaba con la mayoría de los haces
-  vacíos. Ahora junta 0.8 s de nubes, usa haces de 1° y rellena los huecos chicos de una misma
-  pared (de 27 % a 62 % de haces con lectura en la prueba). Además el alcance del `/scan` y del
-  SLAM es el mismo (6 m): antes, cada lectura entre 8 y 10 m se dibujaba como un rayo largo sin
-  pared al final. El mapa nuevo se ve bien desde un mapeo NUEVO (reinicia `go2 lanzar`).
+- **El mapa del SLAM no dibuja las paredes (estrella de rayos con puntitos negros):** el L1 es un
+  lidar 3D de pocos puntos. El `/scan` del SLAM usaba solo los obstáculos "confirmados" (vistos 2
+  veces en el mismo lugar) de 10 a 55 cm de alto: a 3 m el L1 casi nunca confirma una pared, y el
+  piso libre llegaba hasta ella sin pared al final. Ahora el `/scan` usa **todo lo que hay de 10 cm
+  a 1.8 m** (una pared es alta: el L1 le pega a cualquier altura) sin pedir confirmación (el SLAM
+  ya filtra el ruido). En la prueba (`pruebas/prueba_mapa_slam.py`) las 4 paredes del cuarto salen
+  continuas y sin puntitos falsos. Además: 0.8 s de nubes juntas, haces de 1°, huecos chicos de
+  una misma pared rellenos, y el mismo alcance en el `/scan` y el SLAM (6 m). Se ve desde un mapeo
+  NUEVO (reinicia `go2 lanzar`; un mapa guardado con la versión anterior queda como estaba).
+  Ajustes: `scan_alto_max` y `scan_confirmar` (go2_limpiador).
+  - El L1 ve **solo hacia delante**: lo que queda detrás no se mapea hasta que lo mira. Al mapear a
+    mano, gira despacio en cada cuarto (una vuelta entera) para que dibuje todas las paredes.
 - **Se pasa al alinearse con la ruta y vuelve (zigzag):** el Go2 no gira más lento de ~0.4 rad/s
   y responde ~0.3 s tarde. El driver subía cualquier corrección chica de Nav2 a 0.40 rad/s, se
   pasaba, Nav2 corregía al otro lado y así sin fin. Ahora una corrección de menos de 0.20 rad/s

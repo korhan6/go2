@@ -192,11 +192,13 @@ local_costmap:
         enabled: True
         footprint_clearing_enabled: True
         combination_method: 1
-        # suelo_libre: el SUELO que ve el lidar BORRA lo que hubiera marcado ahi (rayos del L1 a cada
-        # punto de suelo). Antes solo borraban los rayos a los obstaculos: con el L1 ralo, una marca
-        # falsa en medio del piso no la cruzaba ningun rayo y quedaba para siempre (el mapa de costos
-        # se llenaba de puntitos y su inflado: "como si no hubiese espacio")
-        observation_sources: obstaculos suelo_libre
+        # SOLO LA NUBE DE AHORA: barrido = un anillo de 3.3 m alrededor del L1 que solo BORRA (sus rayos
+        # cruzan todo este mapa en cada vuelta); despues se marca lo que go2_limpiador publica ahora en
+        # /go2/obstaculos (con su memoria de lo que el L1 dejo de ver). Antes el mapa guardaba cada marca
+        # hasta que un rayo del L1 la cruzara: con el L1 ralo, un rebote de un instante quedaba para
+        # siempre, inflado, y el piso se llenaba de puntitos y sombreado (casa, 20-oct). Con el borrado
+        # del suelo (antes) seguian quedando: pruebas/prueba_puerta.py con GO2_SIM_MOTAS
+        observation_sources: obstaculos barrido
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
@@ -205,15 +207,15 @@ local_costmap:
           clearing: True
           min_obstacle_height: -10.0
           max_obstacle_height: 10.0
-          obstacle_max_range: 3.0
+          obstacle_max_range: 3.4          # >= el barrido (3.3 m): lo que se borra se vuelve a marcar
           obstacle_min_range: 0.0
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           observation_persistence: 0.0
           expected_update_rate: 0.0
           inf_is_valid: False
-        suelo_libre:
-          topic: /go2/suelo
+        barrido:
+          topic: /go2/barrido
           data_type: "PointCloud2"
           sensor_frame: lidar
           marking: False
@@ -267,7 +269,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         footprint_clearing_enabled: True
-        observation_sources: obstaculos suelo_libre       # (suelo_libre: ver el costmap local)
+        observation_sources: obstaculos barrido           # (barrido: ver el costmap local)
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
@@ -276,10 +278,10 @@ global_costmap:
           clearing: True
           min_obstacle_height: -10.0
           max_obstacle_height: 10.0
-          obstacle_max_range: 3.0
+          obstacle_max_range: 3.4          # >= el barrido (3.3 m): lo que se borra se vuelve a marcar
           raytrace_max_range: 3.5
-        suelo_libre:
-          topic: /go2/suelo
+        barrido:
+          topic: /go2/barrido
           data_type: "PointCloud2"
           sensor_frame: lidar
           marking: False

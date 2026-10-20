@@ -171,6 +171,7 @@ class PerroSim(Node):
         g = self.r.m.altura(self.r.x, self.r.y)
         self.motas_vivas = [m for m in self.motas_vivas if m[3] > t]
         for _ in range(r.poisson(self.motas * dt)):
+            # (tambien donde el L1 real no ve, mas alto: peor que la realidad, a proposito)
             a, d = yaw + r.uniform(-1.6, 1.6), r.uniform(0.6, 3.0)
             self.motas_vivas.append((x + d * math.cos(a), y + d * math.sin(a), g + r.uniform(0.15, 0.45),
                                      t + r.uniform(0.2, 0.5)))

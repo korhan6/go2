@@ -2,8 +2,10 @@
 
 Entrada: /utlidar/cloud_deskewed (marco odom del perro, ~15 Hz, ~10k puntos)
 Salidas (todas con la hora de la laptop):
-  /go2/obstaculos   PointCloud2 odom: obstaculos reales (+ puntos virtuales en bordes/caidas)
-  /go2/suelo        PointCloud2 odom: suelo visto (para "limpiar" el mapa de costos)
+  /go2/obstaculos   PointCloud2 odom: obstaculos reales (+ puntos virtuales en bordes/caidas, + lo
+                    recordado que el L1 dejo de ver). Es LO UNICO que marca los mapas de costos de Nav2
+  /go2/barrido      PointCloud2 odom: anillo alrededor del L1 que BORRA los mapas de costos en cada vuelta
+  /go2/suelo        PointCloud2 odom: suelo visto (RViz)
   /go2/fantasmas    PointCloud2 odom: lo que se ELIMINO (cuerpo, error del L1, ruido) -> rojo en RViz
   /scan             LaserScan base_link: para slam_toolbox
   /go2/limpiador_estado  String JSON: Hz, ms, suelo, holguras
@@ -174,6 +176,16 @@ class FantasmasEnLinea(object):
 
 
 # ---------------------------------------------------------------- nodo
+R_BARRIDO = 3.3        # m del L1: cubre todo el mapa de costos local (4 x 4 m) y un poco del global
+T_VISTO = 1.5          # s: un obstaculo a la vista del L1 que ya no se ve se olvida
+# s: un obstaculo FUERA de la vista del L1 (detras, pegado al cuerpo) se recuerda mientras este a menos
+# de 3 m. Con 20 s, el perro trabado en una puerta olvidaba el marco (en la zona ciega, junto a la
+# cabeza), el marco desaparecia del mapa y Nav2 lo empujaba contra el (prueba_puerta.py)
+T_FUERA = 120.0
+T_SOLIDO = 1.0         # s: ... si se vio al menos este tiempo (un rebote de un instante no). Lo que
+                       # entra a la zona ciega pegada al cuerpo (un marco de puerta) se recuerda igual
+
+
 class Limpiador(Node):
     def __init__(self):
         super().__init__("go2_limpiador")
@@ -194,6 +206,12 @@ class Limpiador(Node):
         self.rango_scan = p("rango_scan", 6.0).value
         self.haces_scan = p("haces_scan", 360).value
         self.ventana_scan = p("ventana_scan", 0.8).value
+        # /scan con TODO lo que hay entre 10 cm y esta altura (una pared es alta: el L1 le pega a cualquier
+        # altura), sin pedir que se vea 2 veces (el SLAM ya filtra el ruido: occupancy_threshold). Antes
+        # eran solo los obstaculos confirmados de 10 a 55 cm: a 3 m el L1 casi nunca confirmaba la
+        # pared y el mapa salia sin paredes, con piso libre que llegaba hasta ellas (prueba_mapa_slam.py)
+        self.scan_alto = p("scan_alto_max", 1.8).value
+        self.scan_confirmar = p("scan_confirmar", False).value
         self.ruta_mascara = os.path.expanduser(p("archivo_mascara", "~/.go2_nav/propio.npz").value)
 
         self.mascara = Mascara.cargar(self.ruta_mascara)
@@ -202,6 +220,7 @@ class Limpiador(Node):
         self.mem_k = np.zeros(0, np.int64)
         self.mem_xyz = np.zeros((0, 3), np.float32)
         self.mem_t = np.zeros(0, np.float64)
+        self.mem_t0 = np.zeros(0, np.float64)      # cuando se vio por primera vez
         self.pose = None            # (x, y, z, yaw) del perro en odom
         self.suelo = None
         self.hist_caidas = collections.deque(maxlen=6)     # (puntos bajo el suelo, suelo xy) por nube
@@ -224,6 +243,8 @@ class Limpiador(Node):
         self.create_subscription(PointCloud2, self.topico, self.cb_nube, sd)
         self.pub_obs = self.create_publisher(PointCloud2, "/go2/obstaculos", sd)
         self.pub_suelo = self.create_publisher(PointCloud2, "/go2/suelo", sd)
+        # anillo alrededor del L1: sus rayos BORRAN todo el mapa de costos en cada vuelta (ver barrido())
+        self.pub_barrido = self.create_publisher(PointCloud2, "/go2/barrido", sd)
         self.pub_fant = self.create_publisher(PointCloud2, "/go2/fantasmas", sd)
         # la nube del L1 tal cual, pero SIN el cuerpo ni los fantasmas (para go2_escaleras)
         self.pub_sin = self.create_publisher(PointCloud2, "/go2/nube_sin_fantasmas", sd)
@@ -326,69 +347,101 @@ class Limpiador(Node):
         ruido = xyz[cand][~ok]
         # 6) caidas: celdas sin suelo con una SUPERFICIE plana por debajo (escalon, hueco)
         virtuales = self.caidas(xyz, fx, fy, h, suelo, x, y)
-        # 7) memoria: lo real que entra a la zona ciega (pegado al cuerpo / mascara) se recuerda
-        recordados = self.memoria(obst, suelo, x, y, yaw)
-        if len(recordados):
-            obst = np.concatenate([obst, recordados])
-        # salidas
+        # 7) memoria: lo que el L1 deja de ver (detras, pegado al cuerpo) se recuerda; lo que sigue a la
+        #    vista y ya no se ve, se olvida (ver memoria())
+        recordados, ciegos = self.memoria(obst, virtuales, suelo, x, y, z, yaw)
+        # salidas. Nav2 usa SOLO esto: el mapa de costos se borra en cada vuelta (/go2/barrido)
         fant = np.concatenate([xyz[propio], ruido]) if len(ruido) else xyz[propio]
-        obs_out = np.concatenate([obst, virtuales]) if len(virtuales) else obst
+        obs_out = np.concatenate([obst, virtuales, recordados])
+        self.pub_barrido.publish(crear_nube(self.barrido(x, y, yaw, suelo), "odom", stamp))
         self.pub_obs.publish(crear_nube(obs_out, "odom", stamp))
         self.pub_suelo.publish(crear_nube(voxel_unico(xyz[es_suelo], 0.08), "odom", stamp))
         self.pub_fant.publish(crear_nube(voxel_unico(fant, 0.03), "odom", stamp))
         if not self.pausa_slam:
-            self.publicar_scan(obst, x, y, yaw, stamp)
+            pared = obst if self.scan_confirmar else xyz[(h >= self.obst_min) & (h <= self.scan_alto) & ~propio]
+            self.publicar_scan(np.concatenate([pared, ciegos]), x, y, yaw, stamp)
+        obst = np.concatenate([obst, recordados])
         self.ultimo = self.holguras(obst, virtuales, x, y, yaw)
         self.ultimo.update({"suelo_bajo_cuerpo": round(alto_cuerpo, 3), "puntos": int(len(xyz)),
                             "obstaculos": int(len(obst)), "fantasmas": int(len(fant)),
                             "caidas": int(len(virtuales) // 4), "reflejos": int(self.reflejos)})
 
-    def memoria(self, obst, suelo, x, y, yaw):
-        """La zona donde salen los fantasmas (pegada al cuerpo) se filtra: ahi el perro no puede
-        distinguir. Pero un objeto REAL se ve antes, desde lejos, fuera de esa zona; los fantasmas
-        nunca salen fuera de ella. Asi que: todo obstaculo visto fuera de la zona ciega se recuerda
-        (voxel de 8 cm en odom) y, si despues queda dentro de la zona ciega, se sigue publicando
-        (hasta 20 s). Lo que queda a la vista y ya no se ve, se olvida en 1.5 s."""
+    def barrido(self, x, y, yaw, suelo):
+        """Puntos en un anillo de R_BARRIDO alrededor del L1 (cada 2.3 cm: menos que una celda de 5 cm).
+        En Nav2 son solo para BORRAR (clearing): sus rayos cruzan todo el mapa de costos local, asi que en
+        cada vuelta queda SOLO lo que este nodo publica ahora en /go2/obstaculos. Antes el mapa de costos
+        guardaba cada marca hasta que un rayo del L1 la cruzara: con el L1 ralo, un rebote de un instante
+        quedaba para siempre, inflado 55 cm, y el piso se llenaba de "puntitos" y sombreado."""
+        lx, ly = x + self.lidar_fx * math.cos(yaw), y + self.lidar_fx * math.sin(yaw)
+        a = np.linspace(-math.pi, math.pi, 900, endpoint=False)
+        return np.c_[lx + R_BARRIDO * np.cos(a), ly + R_BARRIDO * np.sin(a),
+                     np.full(len(a), suelo + 0.25)].astype(np.float32)
+
+    def memoria(self, obst, virt, suelo, x, y, z, yaw):
+        """Como el mapa de costos se borra en cada vuelta, lo que el L1 deja de ver lo recuerda este nodo
+        (voxel de 8 cm en odom, el punto medido):
+          - FUERA del campo de vision del L1 (detras de la cabeza, mas alto de lo que ve de cerca,
+            pegado al cuerpo, en la zona de los fantasmas): se recuerda mientras este cerca (no girar
+            ni retroceder contra algo que se vio antes), pero solo si se vio durante T_SOLIDO s o mas;
+          - A LA VISTA y ya no se ve, o visto solo un instante: se olvida en T_VISTO s (un rebote, una
+            persona que paso). Asi no quedan puntitos pegados.
+        Recuerdos nuevos solo de lo visto a >= 0.35 m del borde del cuerpo (ahi nunca hay fantasmas); lo
+        de mas cerca solo refresca recuerdos que ya existian. Tambien las caidas (bordes de escalera).
+        -> (recordados que no estan en esta nube, los de la zona ciega para el /scan del SLAM)"""
         ahora = time.monotonic()
         V = 0.08
-        if len(obst):
-            # NUEVOS recuerdos solo de lo visto a >= 0.35 m del borde del cuerpo (donde nunca hay
-            # fantasmas); lo de mas cerca solo refresca recuerdos que ya existian
-            ox, oy = a_cuerpo(obst, x, y, yaw)
+        nuevos = np.concatenate([obst, virt]) if len(virt) else obst
+        if len(nuevos):
+            ox, oy = a_cuerpo(nuevos, x, y, yaw)
             lejos = np.maximum(np.abs(ox) - LARGO2, np.abs(oy) - ANCHO2) >= 0.35
-            k = np.floor(obst / V).astype(np.int64)
+            k = np.floor(nuevos / V).astype(np.int64)
             kk = (k[:, 0] << 42) ^ ((k[:, 1] & 0x1FFFFF) << 21) ^ (k[:, 2] & 0x1FFFFF)
             sirve = lejos | np.isin(kk, self.mem_k)
-            obst, k = obst[sirve], k[sirve]
-        if len(obst):
-            keys = (k[:, 0] << 42) ^ ((k[:, 1] & 0x1FFFFF) << 21) ^ (k[:, 2] & 0x1FFFFF)
-            keys, idx = np.unique(keys, return_index=True)
+            nuevos, kk = nuevos[sirve], kk[sirve]
+        if len(nuevos):
+            keys, idx = np.unique(kk, return_index=True)
             # el punto MEDIDO, no el centro del cubo: con el centro, un marco de puerta quedaba
             # hasta 8 cm corrido hacia adentro de la pared, la puerta "se ensanchaba" en el mapa y
             # el perro rozaba el marco al girar dentro de ella (prueba_puerta.py)
-            nuevos_xyz = obst[idx].astype(np.float32)
+            nuevos_xyz = nuevos[idx].astype(np.float32)
         else:
             keys, nuevos_xyz = np.zeros(0, np.int64), np.zeros((0, 3), np.float32)
         viejo = ~np.isin(self.mem_k, keys)
+        t0 = np.full(len(keys), ahora)
+        if len(keys) and len(self.mem_k):
+            o = np.argsort(self.mem_k)
+            j = np.clip(np.searchsorted(self.mem_k[o], keys), 0, len(o) - 1)
+            ya = self.mem_k[o][j] == keys
+            t0[ya] = self.mem_t0[o][j][ya]
         mk = np.concatenate([self.mem_k[viejo], keys])
         mx = np.concatenate([self.mem_xyz[viejo], nuevos_xyz])
         mt = np.concatenate([self.mem_t[viejo], np.full(len(keys), ahora)])
+        m0 = np.concatenate([self.mem_t0[viejo], t0])
+        vacio = np.zeros((0, 3), np.float32)
         if len(mk) == 0:
-            self.mem_k, self.mem_xyz, self.mem_t = mk, mx, mt
-            return np.zeros((0, 3), np.float32)
+            self.mem_k, self.mem_xyz, self.mem_t, self.mem_t0 = mk, mx, mt, m0
+            return vacio, vacio
         fx, fy = a_cuerpo(mx, x, y, yaw)
         h = mx[:, 2] - suelo
         ciego = ((np.abs(fx) < LARGO2 + 0.12) & (np.abs(fy) < ANCHO2 + 0.13)) \
             | self.mascara.quitar(fx, fy, h) | self.en_linea.quitar(fx, fy, h)
+        # campo de vision del L1 (boca abajo e inclinado 15 grados, en la cara): delante de la cabeza,
+        # hasta 15 grados por encima del horizonte (con 3 cm de margen) y a menos de 2.5 m
+        dx, dz = fx - self.lidar_fx, mx[:, 2] - (z - 0.047)
+        a_la_vista = (dx > 0.10) & (dz <= 0.27 * dx - 0.03) & (np.hypot(dx, fy) < 2.5) & ~ciego
+        solido = mt - m0 >= T_SOLIDO
         edad = ahora - mt
-        cerca = np.hypot(fx, fy) < 2.5
-        # algo "dentro" del cuerpo no puede ser real (el perro estaria parado encima): fuera
+        cerca = np.hypot(fx, fy) < 3.0
+        # algo "dentro" del cuerpo no puede ser real (el perro estaria parado encima): fuera. Y lo que
+        # ya no esta a la altura de un obstaculo (otro piso, despues de una escalera): fuera
         dentro = (np.abs(fx) < LARGO2) & (np.abs(fy) < ANCHO2)
-        guardar = cerca & ~dentro & ((ciego & (edad < 20.0)) | (~ciego & (edad < 1.5)))
-        self.mem_k, self.mem_xyz, self.mem_t = mk[guardar], mx[guardar], mt[guardar]
-        # solo lo que esta en la zona ciega y no se acaba de ver (lo visible ya va en la nube)
-        out = guardar & ciego & (edad > 0.0)
-        return mx[out]
+        altura_ok = (h > self.obst_min - 0.08) & (h < self.obst_max + 0.10)
+        largo = ciego | (solido & ~a_la_vista)
+        guardar = cerca & ~dentro & altura_ok & np.where(largo, edad < T_FUERA, edad < T_VISTO)
+        self.mem_k, self.mem_xyz, self.mem_t, self.mem_t0 = mk[guardar], mx[guardar], mt[guardar], m0[guardar]
+        # lo que se acaba de ver ya va en la nube de esta vuelta
+        viejo = guardar & (edad > 0.0)
+        return mx[viejo], mx[viejo & ciego]
 
     def estimar_suelo(self, xyz, fx, fy, z):
         prev = self.suelo if self.suelo is not None else z - self.altura_base
