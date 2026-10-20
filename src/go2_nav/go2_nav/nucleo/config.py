@@ -8,6 +8,7 @@ DEFECTO = {
     # m: mas angosta no se toma sola = el cuerpo (0.31 m) + 5 cm por lado. El lidar mide el ancho en
     # franjas de 10 cm (0.40 m es lo minimo que puede medir): se compara con +-5 cm de tolerancia
     "ancho_min_escalera": 0.41,
+    "v_escalera_max": 0.40,            # m/s: hasta aca sube la velocidad si el perro no avanza (EMPUJE)
     "w_min": 0.55,                     # rad/s: el Go2 no gira en el sitio con menos que esto
     "radio_giro": 0.38,                # m libres alrededor para girar en el sitio (esquinas del cuerpo)
     # --- guardian ---

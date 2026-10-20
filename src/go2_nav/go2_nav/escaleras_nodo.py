@@ -63,7 +63,7 @@ class Escaleras(Node):
     def __init__(self):
         super().__init__("go2_escaleras")
         self.cfg = dict(config.DEFECTO)
-        for k in ("v_subir", "v_bajar", "ancho_min_escalera", "w_min", "radio_giro", "obst_min",
+        for k in ("v_subir", "v_bajar", "ancho_min_escalera", "v_escalera_max", "w_min", "radio_giro", "obst_min",
                   "obst_max", "sesgo_cerca"):
             self.cfg[k] = self.declare_parameter(k, self.cfg[k]).value
         self.memoria = Memoria()

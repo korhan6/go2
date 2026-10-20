@@ -31,6 +31,11 @@ LIMITE = {"DETENER": 3, "ALINEAR": 25, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 
           "ACERCAR": 12, "GIRAR": 30, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
           "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "GIRAR_FRENTE": 30, "RESTAURAR": 10}
 EN_ESCALERA = ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
+# EMPUJE: el Go2 casi no camina por debajo de ~0.20 m/s (pisa en el sitio) y en la escalera necesita
+# a veces mas. Si avanza menos del 40 % de lo que se le pide, la velocidad sube 3 cm/s cada 0.5 s
+# (hasta v_escalera_max) y se mantiene cuando ya avanza. Solo en los estados que caminan.
+CAMINAN = ("CENTRAR", "DISTANCIA", "ACERCAR", "BAJANDO", "SUBIENDO", "SALIR", "MEDIR")
+EMPUJE_PASO, EMPUJE_CADA, EMPUJE_VENTANA = 0.03, 0.5, 0.8
 # Alinearse SIN PASARSE con un perro que responde tarde (~0.3 s) y no gira lento (w_min):
 #   grueso: gira normal hasta que lo que falta (contando lo que va a seguir girando) es ZONA_FINA;
 #   espera a que quede quieto;
@@ -288,9 +293,35 @@ class Maniobra(object):
         x, y, z, yaw, pitch, roll = pose
         ctx = {"ahora": ahora, "dt": ahora - self.t_estado, "P": np.array([x, y]), "z": z,
                "yaw": yaw, "pitch": pitch, "roll": roll, "det": det, "holg": holg}
-        cmd = fn(ctx) or (0.0, 0.0, 0.0)
+        cmd = self._empuje(ctx, fn(ctx) or (0.0, 0.0, 0.0))
         self.w_ult = cmd[2]
         return cmd
+
+    def _empuje(self, c, cmd):
+        """Sube la velocidad de a poco si el perro no avanza lo que se le pide (ver EMPUJE_*)."""
+        vx, vy, wz = cmd
+        v = math.hypot(vx, vy)
+        ahora, P = c["ahora"], c["P"]
+        g = self.m.setdefault("emp", {"k": 1.0, "t": ahora, "P": P.copy(), "t_sube": ahora, "v_env": 0.0})
+        if v < 0.02 or self.estado not in CAMINAN:
+            g["t"], g["P"], g["v_env"] = ahora, P.copy(), 0.0      # quieto o girando: no se mide
+            return cmd
+        v_max = self.cfg.get("v_escalera_max", 0.40)
+        dt = ahora - g["t"]
+        if dt >= EMPUJE_VENTANA and g["v_env"] > 0.0:
+            real = float(np.linalg.norm(P - g["P"])) / dt
+            if real < 0.4 * g["v_env"] and ahora - g["t_sube"] >= EMPUJE_CADA and g["v_env"] < v_max - 1e-3:
+                g["k"] = min(v_max / v, (g["v_env"] + EMPUJE_PASO) / v)
+                g["t_sube"] = ahora
+                self.info_empuje = "empujando %.2f m/s (no avanzaba)" % (v * g["k"])
+            g["t"], g["P"] = ahora, P.copy()
+        k = min(g["k"], v_max / v) if v > 0 else 1.0
+        g["v_env"] = v * k
+        return vx * k, vy * k, wz
+
+    def empuje_al_maximo(self):
+        g = self.m.get("emp")
+        return g is None or g["v_env"] >= self.cfg.get("v_escalera_max", 0.40) - 1e-3
 
     # cada estado: devuelve (vx, vy, wz) o None (= quieto)
     def _e_detener(self, c):
@@ -477,7 +508,8 @@ class Maniobra(object):
         t0, p0 = self.m["mov"]
         if np.linalg.norm(P - p0) > 0.04:
             self.m["mov"] = (ahora, P.copy())
-        elif ahora - t0 > 6.0:
+        elif ahora - t0 > 6.0 and self.empuje_al_maximo():
+            # (solo si ya se le pidio lo maximo: antes se rendia a 0.15 m/s, donde el Go2 pisa en el sitio)
             if not self.m["piso_cambio"] and nivelado:
                 self.abortar("el perro no avanza en la escalera (revisa la marcha / firmware)", ahora)
             else:
@@ -490,6 +522,9 @@ class Maniobra(object):
             self.detener("recorrio demasiado", ahora)
             return None
         v = self.cfg["v_bajar"] if bajando else self.cfg["v_subir"]
+        g = self.m.get("emp")
+        if g and g["k"] > 1.0:
+            self.info += " (empujando %.2f m/s: no avanzaba a %.2f)" % (min(v * g["k"], self.cfg.get("v_escalera_max", 0.40)), v)
         return sgn * v, vy, w
 
     def _e_salir(self, c):

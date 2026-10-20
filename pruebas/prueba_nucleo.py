@@ -125,7 +125,7 @@ def prueba_posible():
     print("   OK")
 
 
-def correr(tipo, d_nose=0.6, verbose=False):
+def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0):
     """La maniobra completa contra el simulador (como escaleras_nodo.lazo, a 10 Hz)."""
     m = M.casa_demo()
     if tipo == "bajar":
@@ -133,6 +133,14 @@ def correr(tipo, d_nose=0.6, verbose=False):
     else:
         x, yaw = PRIMER_ESCALON - terreno.LARGO2 - d_nose, 0.0
     r = M.RobotSim(m, x=x, y=6.6, yaw=yaw, ruido_real=True)
+    if zona_muerta > 0:
+        # como el Go2 real: por debajo de zona_muerta m/s pisa en el sitio (avanza un 10 %)
+        mover0 = r.mover
+
+        def mover(vx, vy, wz):
+            k = 0.1 if math.hypot(vx, vy) < zona_muerta else 1.0
+            mover0(vx * k, vy * k, wz)
+        r.mover = mover
     cfg = dict(config.DEFECTO)
     det, mem = Detector(), Memoria()
     man = Maniobra(RobotMarcha(r), cfg, (lambda t: print("   %6.1f  %s" % (r.t, t))) if verbose else (lambda t: None))
@@ -185,6 +193,14 @@ def correr(tipo, d_nose=0.6, verbose=False):
         assert all(v >= 0 for v in ordenes["SUBIENDO"]) and ordenes["SUBIENDO"], "la subida tiene que ser de frente"
         assert abs(r.z - 1.83) < 0.05
     return res
+
+
+def prueba_empuje():
+    print("== perro que NO camina por debajo de 0.22 m/s (como el Go2): la escalera sube la velocidad sola")
+    for tipo in ("bajar", "subir"):
+        res = correr(tipo, 0.6, zona_muerta=0.22)
+        assert res["ok"], res
+    print("   OK")
 
 
 def prueba_maniobras(cuales=("bajar", "subir")):
@@ -346,6 +362,8 @@ if __name__ == "__main__":
         prueba_alinear()
     if que in ("todo", "maniobras"):
         prueba_maniobras()
+    if que in ("todo", "empuje"):
+        prueba_empuje()
     if que in ("bajar", "subir"):
         correr(que, verbose=True)
     print("LISTO")

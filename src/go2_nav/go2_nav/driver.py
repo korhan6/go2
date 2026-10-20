@@ -72,6 +72,12 @@ class Driver(Node):
         # a w_efectiva. Antes cualquier correccion chica de Nav2 se volvia 0.40 rad/s, el perro se
         # pasaba de la linea, Nav2 corregia al otro lado y asi sin fin (zigzag)
         self.w_quieto = p("w_quieto", 0.20).value
+        # EMPUJE para Nav2: si el perro avanza menos del 40 % de lo que se le manda (pisa en el sitio),
+        # la orden sube de a poco (x1.15 cada 0.6 s, giro incluido: misma curva) hasta v_empuje_max,
+        # SOLO con espacio libre en esa direccion y sin el monitor de choques frenando
+        self.v_empuje_max = p("v_empuje_max", 0.45).value
+        self.emp_k, self.emp_t, self.emp_p, self.emp_v = 1.0, 0.0, None, 0.0
+        self.pose_xy = None
         # la compensacion de giro (go2 calibrar_mov) nunca pide mas de esto x lo que quiere Nav2
         self.comp_w_max = p("compensacion_giro_max", 1.5).value
         self.holguras = {}
@@ -155,6 +161,7 @@ class Driver(Node):
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = p.x, p.y, p.z
         t.transform.rotation = m.pose.pose.orientation
         self.tf.sendTransform(t)
+        self.pose_xy = (p.x, p.y)
         self.n_odom += 1
         self.t_odom = time.monotonic()
 
@@ -270,6 +277,32 @@ class Driver(Node):
             wz = 0.0 if abs(wz) < self.w_quieto else math.copysign(self.w_efectiva, wz)
         return vx, vy, wz
 
+    def empuje(self, vx, vy, wz):
+        """Si el perro no avanza lo que se le pide, subir la orden de a poco (ver __init__)."""
+        v = math.hypot(vx, vy)
+        ahora = time.monotonic()
+        H = self.holguras if ahora - self.t_holg < 2.0 else None
+        if v < self.min_v or self.en_escalera or self.cm_accion != 0 or H is None or self.pose_xy is None:
+            self.emp_k, self.emp_p = 1.0, None
+            return vx, vy, wz
+        lado = ("adelante" if vx > 0 else "atras") if abs(vx) >= abs(vy) else ("izq" if vy > 0 else "der")
+        d = H.get(lado)
+        if d is None or d < 0.35:                 # sin espacio medido en esa direccion: nunca empujar
+            self.emp_k, self.emp_p = 1.0, None
+            return vx, vy, wz
+        if self.emp_p is None:
+            self.emp_t, self.emp_p = ahora, self.pose_xy
+        elif ahora - self.emp_t >= 0.6:
+            real = math.hypot(self.pose_xy[0] - self.emp_p[0], self.pose_xy[1] - self.emp_p[1]) / (ahora - self.emp_t)
+            if real < 0.4 * self.emp_v:
+                self.emp_k = min(self.emp_k * 1.15, self.v_empuje_max / v)
+            elif real > 0.8 * self.emp_v:
+                self.emp_k = max(1.0, self.emp_k * 0.95)          # ya avanza: vuelve de a poco
+            self.emp_t, self.emp_p = ahora, self.pose_xy
+        k = max(1.0, min(self.emp_k, self.v_empuje_max / v, self.wz_max / abs(wz) if abs(wz) > 1e-3 else 9.0))
+        self.emp_v = v * k
+        return vx * k, vy * k, wz * k
+
     def cb_evita(self, m):
         if m.header.identity.api_id != EVITA_GET or m.header.status.code != 0:
             return
@@ -341,6 +374,9 @@ class Driver(Node):
         if nav and (vx or vy or wz):
             # minimo para Nav2 (la escalera, la calibracion y el escape mandan su velocidad)
             vx, vy, wz = self.efectiva(vx, vy, wz)
+            vx, vy, wz = self.empuje(vx, vy, wz)
+        else:
+            self.emp_k, self.emp_p = 1.0, None
         self.ultima_orden = (vx, vy, wz)
         if abs(vx) > 1e-3 or abs(vy) > 1e-3 or abs(wz) > 1e-3:
             self._req(API_MOVE, {"x": vx, "y": vy, "z": wz})
@@ -366,7 +402,7 @@ class Driver(Node):
              "altura": self.altura, "modo": self.modo, "bateria": self.soc, "move_hz": self.envios,
              "remoto": self.remoto_activo(), "evitacion_unitree": self.evita,
              "orden": [round(v, 2) for v in self.ultima_orden], "ordenes_minimas": self.muertas,
-             "subidas": self.subidas, "compensado": self.curvas is not None,
+             "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
              "pausas_lidar": self.pausas_lidar}
         self.n_odom = 0

@@ -247,6 +247,13 @@ go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'f
 6. **`no hay espacio para girar junto a la escalera`** → necesita 38 cm libres alrededor para
    girar 180° a 65 cm del borde: pasillos de menos de 80 cm no.
 
+### Si el perro no avanza (pisa en el sitio)
+El Go2 casi no camina por debajo de ~0.20 m/s. Si avanza menos del 40 % de lo que se le pide, la
+velocidad sube sola de a poco (en la escalera 3 cm/s cada 0.5 s hasta 0.40 m/s; con Nav2 x1.15
+cada 0.6 s hasta 0.45 m/s, solo con espacio libre en esa dirección) y vuelve a bajar cuando ya
+avanza. En `go2 ver` sale "empujando X m/s". Topes: `v_escalera_max` (go2_escaleras) y
+`v_empuje_max` (go2_driver).
+
 ### Subir una escalera (lo más seguro)
 Llévalo (con `go2 manejar` o el control) hasta 0.5–1 m delante del primer escalón, mirándolo de
 frente y centrado, sal de `manejar` con x, y:
