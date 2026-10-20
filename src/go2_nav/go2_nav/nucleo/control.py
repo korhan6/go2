@@ -62,12 +62,61 @@ class Memoria(object):
         self._c = None
 
 
+ANG_PARED = np.radians(np.arange(-20.0, 20.5, 1.0))
+
+
+def paredes_laterales(fx, fy, h, celda=0.05, min_celdas=6):
+    """Distancia del costado izquierdo y derecho del perro a la pared/baranda, medida a la altura del
+    centro del cuerpo (inf = no hay), para centrarse en la escalera.
+
+    Pared = una RECTA (hasta 20 grados respecto del perro) de celdas VERTICALES (en la misma celda
+    de 5 cm hay alturas que cubren >= 10 cm) de >= 30 cm de largo. Antes contaba cualquier punto al
+    costado: encima de la escalera las huellas y contrahuellas de al lado eran "pared a 0 cm" de los
+    dos lados, el perro no se centraba y se iba corriendo contra la pared de verdad. Una
+    contrahuella es vertical pero cruza: no forma una recta a lo largo del perro.
+    (El angulo de la recta no se usa para el rumbo: con celdas de 5 cm sale con +-10 grados de ruido.)"""
+    sel = ((fx > -terreno.LARGO2 - 0.25) & (fx < 1.2) & (np.abs(fy) > terreno.ANCHO2) & (np.abs(fy) < 0.8)
+           & (h > -0.45) & (h < 1.2))
+    if np.count_nonzero(sel) < min_celdas:
+        return math.inf, math.inf
+    ix = np.floor(fx[sel] / celda).astype(np.int64)
+    iy = np.floor(fy[sel] / celda).astype(np.int64)
+    col = (ix << 20) + (iy + (1 << 19))
+    u, inv = np.unique(col, return_inverse=True)
+    alto = np.full(len(u), -np.inf)
+    bajo = np.full(len(u), np.inf)
+    np.maximum.at(alto, inv, h[sel])
+    np.minimum.at(bajo, inv, h[sel])
+    vert = (alto - bajo) >= 0.10
+    cx = ((u[vert] >> 20) + 0.5) * celda
+    cy = (((u[vert] & ((1 << 20) - 1)) - (1 << 19)) + 0.5) * celda
+    out = []
+    for lado in (1, -1):
+        L = cy * lado > terreno.ANCHO2
+        X, Y = cx[L], cy[L] * lado               # Y: hacia afuera de ese costado (> 0)
+        mejor = None
+        if len(X) >= min_celdas:
+            for th in ANG_PARED:
+                yp = Y - lado * X * math.tan(th)     # distancia a la recta de angulo th (en fx = 0)
+                b = np.floor(yp / celda).astype(np.int64)
+                b0 = b.min()
+                n = np.bincount(b - b0)
+                n2 = n + np.r_[n[1:], 0]             # 2 franjas: una recta en celdas de 5 cm cae en 2
+                k = int(np.argmax(n2))
+                if mejor is None or n2[k] > mejor[0]:
+                    en = (b - b0 == k) | (b - b0 == k + 1)
+                    mejor = (int(n2[k]), float(np.mean(yp[en])), float(np.ptp(X[en])))
+        ok = mejor is not None and mejor[0] >= min_celdas and mejor[2] >= 0.30
+        out.append(max(0.0, mejor[1] - terreno.ANCHO2) if ok else math.inf)
+    return out[0], out[1]
+
+
 def guardian(xyz, pose3, suelo, cfg, rampa=False):
     """holguras + mitades del frente con la nube local. pose3 = (x, y, z, yaw).
 
     Ademas de terreno.holguras agrega:
       alto_delante  distancia (desde el hocico) a algo mas alto que el perfil de una escalera
-      pared_izq/der distancia del costado a la pared/baranda mas cercana (cualquier altura)
+      pared_izq/der distancia del costado a la pared/baranda (ver paredes_laterales)
       esquina_izq/der  True si algo roza la esquina delantera de ese lado
     """
     if xyz is None or len(xyz) == 0:
@@ -81,13 +130,7 @@ def guardian(xyz, pose3, suelo, cfg, rampa=False):
     a = fx - terreno.LARGO2
     m = (a > 0.0) & (a < 0.8) & (np.abs(fy) < terreno.ANCHO2 + 0.05) & (h > 0.55 + 0.5 * a)
     holg["alto_delante"] = float(np.min(a[m])) if np.any(m) else math.inf
-    # paredes a los lados a CUALQUIER altura razonable (en una escalera las paredes y barandas
-    # quedan por encima o por debajo de la franja normal): para centrarse en la escalera
-    banda = (np.abs(fx) < terreno.LARGO2 + 0.25) & (h > -0.25) & (h < 1.2)
-    li = banda & (fy > terreno.ANCHO2)
-    ld = banda & (fy < -terreno.ANCHO2)
-    holg["pared_izq"] = float(np.min(fy[li]) - terreno.ANCHO2) if np.any(li) else math.inf
-    holg["pared_der"] = float(np.min(-fy[ld]) - terreno.ANCHO2) if np.any(ld) else math.inf
+    holg["pared_izq"], holg["pared_der"] = paredes_laterales(fx, fy, h)
     # esquinas delanteras: algo pegado a la esquina (entrando en diagonal a una pared)
     obst = (h > cfg["obst_min"]) & (h < cfg["obst_max"])
     zona = (fx > terreno.LARGO2 - 0.12) & (fx < terreno.LARGO2 + 0.10) & obst

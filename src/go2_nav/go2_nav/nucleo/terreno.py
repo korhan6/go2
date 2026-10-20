@@ -88,10 +88,15 @@ def a_cuerpo(xyz, x, y, yaw):
 
 
 def suelo_abs(xyz, x, y, z, yaw, previo=None, medido=False):
-    """Altura (odom) del suelo que pisa el perro: el nivel con mas puntos alrededor de las patas.
+    """Altura (odom) del suelo que pisa el perro. Con medido=True devuelve (altura, se_vio_el_suelo).
 
-    Se usa el nivel mas poblado (no la mediana) para que un borde de escalera o una mesa
-    cerca no muevan la estimacion. Con medido=True devuelve (altura, se_vio_el_suelo).
+    El suelo es la capa HORIZONTAL mas poblada CERCA de donde tiene que estar: ~ALTURA_BASE bajo el
+    cuerpo (+-10 cm), o +-6 cm del suelo anterior. Antes ganaba el nivel con mas puntos entre 12 y
+    70 cm bajo el cuerpo: pegado a una escalera en un pasillo angosto casi no se ve suelo (lo tapan
+    la cabeza y las paredes) y ganaban los reflejos del piso brillante o el primer escalon. Con el
+    suelo mal puesto los escalones "median" 35 cm y la subida no se confirmaba nunca.
+    Tampoco cuentan las columnas verticales (paredes, sus reflejos bajo el piso, la cara de un
+    escalon): en el suelo cada columna de 5 cm tiene una sola altura.
     """
     g, ok = (previo if previo is not None else z - ALTURA_BASE), False
     if len(xyz):
@@ -103,10 +108,23 @@ def suelo_abs(xyz, x, y, z, yaw, previo=None, medido=False):
         m = (np.abs(fx) < 1.1) & (np.abs(fy) < 0.8) & ~propio & (dz < -0.12) & (dz > -0.70)
         if np.count_nonzero(m) >= 10:
             d = dz[m]
-            hist, bordes = np.histogram(d, bins=np.arange(-0.70, -0.10, 0.02))
-            i = int(np.argmax(hist))
-            c = 0.5 * (bordes[i] + bordes[i + 1])
-            g, ok = float(z + np.median(d[np.abs(d - c) < 0.03])), True
+            col = (np.floor(xyz[m, 0] / 0.05).astype(np.int64) << 32) + np.floor(xyz[m, 1] / 0.05).astype(np.int64)
+            _u, inv = np.unique(col, return_inverse=True)
+            alto = np.full(len(_u), -np.inf)
+            bajo = np.full(len(_u), np.inf)
+            np.maximum.at(alto, inv, d)
+            np.minimum.at(bajo, inv, d)
+            d = d[(alto - bajo)[inv] <= 0.10]
+            ventanas = ([(previo - z, 0.06)] if previo is not None else []) + [(-ALTURA_BASE, 0.10)]
+            for centro, tol in ventanas:
+                v = d[np.abs(d - centro) <= tol]
+                if v.size < 10:
+                    continue
+                hist, bordes = np.histogram(v, bins=np.arange(centro - tol, centro + tol + 0.011, 0.02))
+                i = int(np.argmax(hist))
+                c = 0.5 * (bordes[i] + bordes[i + 1])
+                g, ok = float(z + np.median(v[np.abs(v - c) < 0.03])), True
+                break
     return (g, ok) if medido else g
 
 
@@ -397,6 +415,22 @@ def analizar_bajada(fx, fy, h):
     return det, "caida", "escalera de bajada a %.2f m (ancho %.2f m)" % (det["dist"], det["ancho"])
 
 
+def _recta_robusta(x, y, tol=0.075):
+    """Carriles (bool) de la recta que pasa por mas puntos (x, y) a <= tol (probando cada par; a
+    igual cantidad, la menos inclinada)."""
+    mejor, en_mejor = None, np.ones(len(x), bool)
+    for i in range(len(x)):
+        for j in range(i + 1, len(x)):
+            b = (y[j] - y[i]) / (x[j] - x[i])
+            if abs(b) > 1.2:
+                continue
+            en = np.abs(y - (y[i] + b * (x - x[i]))) <= tol
+            clave = (int(np.count_nonzero(en)), -abs(b))
+            if mejor is None or clave > mejor:
+                mejor, en_mejor = clave, en
+    return en_mejor
+
+
 def analizar_subida(fx, fy, h):
     """Escalera de subida delante: dict(bx, by, dist, ang, ancho, abierta) o None.
 
@@ -448,9 +482,17 @@ def analizar_subida(fx, fy, h):
     if len(lats) < 4:
         return None
     lats, inicios = np.array(lats), np.array(inicios)
-    if np.count_nonzero(np.abs(lats) <= 0.2) < 3:
+    # recta ROBUSTA: la que pasa por mas carriles (a <= 7.5 cm). Pegado a una pared lateral el L1 la
+    # ve solo hasta ~15 grados sobre el horizonte y parece "escalones" que empiezan ya; con minimos
+    # cuadrados esos carriles torcian el borde 10-17 grados y el perro se centraba corrido, contra
+    # la pared
+    en = _recta_robusta(lats, inicios)
+    lats, inicios = lats[en], inicios[en]
+    if len(lats) < 4:
         return None
     b, a = np.polyfit(lats, inicios, 1)
+    if np.count_nonzero(np.abs(lats) <= 0.2 + 1e-6) < 3:
+        return None
     if float(np.std(inicios - (a + b * lats))) > 0.08 or abs(b) > 1.2:
         return None
     c = float(0.5 * (lats[0] + lats[-1]))

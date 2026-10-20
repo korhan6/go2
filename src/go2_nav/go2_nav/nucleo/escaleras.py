@@ -3,8 +3,9 @@
 SUBIR (de frente):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> ACERCAR -> MARCHA_ON -> SUBIENDO
                     -> SALIR -> MARCHA_OFF -> LISTO
 BAJAR (SIEMPRE en reversa):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> DISTANCIA -> GIRAR 180
-                    -> VERIFICAR -> MARCHA_ON -> BAJANDO (de reversa) -> SALIR -> MARCHA_OFF
+                    -> VERIFICAR -> MARCHA_ON -> BAJANDO (de reversa) -> MARCHA_OFF
                     -> GIRAR_FRENTE -> LISTO
+                    (BAJANDO para en seco cuando el cuerpo vuelve a quedar plano: sin SALIR)
 
 Antes de pisar la escalera, cualquier duda = aborta y vuelve a la marcha normal.
 Ya encima de los escalones nunca cambia de marcha: si algo falla se queda quieto (DETENIDO)
@@ -24,6 +25,11 @@ CONFIRMAR_N, CONFIRMAR_T = 3, 4.0        # detecciones seguidas (en 4 s) para co
 TOL = {"bajar": (0.15, math.radians(10)), "subir": (0.15, math.radians(10)),
        "posible": (0.40, math.radians(20))}
 NIVEL = math.radians(5)                  # pitch con el que el perro esta "a nivel"
+# BAJADA: termina en cuanto el cuerpo vuelve a quedar PLANO despues de haber ido inclinado (las 4
+# patas abajo). Atras no se ve nada (el L1 mira adelante): no se camina ni un paso mas de reversa
+INCLINADO = math.radians(8)              # pitch de "ya estoy en los escalones"
+T_INCLINADO = 0.3                        # s inclinado seguidos para contarlo
+T_PLANO = 0.5                            # s plano (y quieto) para darlo por terminado
 D_GIRO, D_MIN, D_MAX = 0.65, 0.50, 1.20  # bajada: distancia del centro al borde para girar 180
 D_SUBIR = 0.45                           # subida: centro del perro a 45 cm del primer escalon
 # s maximos por estado (los giros esperan quieto entre pulsos finos: ver _girar_a)
@@ -56,6 +62,18 @@ def _lim(v, m):
     return max(-m, min(m, v))
 
 
+def perfil_frente(fx, fy, h, paso=0.10, n=12):
+    """Lo mas alto (cm sobre el suelo) en el carril del centro, cada 10 cm desde el hocico: lo que
+    el lidar ve delante, en numeros, para diagnosticar una escalera que no se confirma."""
+    m = (np.abs(fy) < 0.15) & (h > -0.6) & (h < 1.0)
+    a = fx[m] - terreno.LARGO2
+    out = []
+    for k in range(n):
+        s = (a >= k * paso) & (a < (k + 1) * paso)
+        out.append("%d" % round(100 * float(np.max(h[m][s]))) if np.any(s) else "-")
+    return " ".join(out)
+
+
 class Detector(object):
     """Confirma escaleras con varias nubes seguidas (en odom).
 
@@ -73,6 +91,8 @@ class Detector(object):
         self.motivo = ""                      # lo que hay delante, en palabras (bajada)
         self.motivo_subida = ""               # idem, para una escalera de subida
         self.centro = "nada"                  # 'caida' | 'suelo' | 'pared' | 'nada' delante
+        self.perfil = ""                      # alturas (cm) delante del hocico, cada 10 cm: 'go2 escaleras'
+        self.alto_cuerpo = None               # m del cuerpo sobre el suelo estimado (normal ~0.30)
 
     def limpiar(self):
         self.hist = {k: [] for k in self.hist}
@@ -93,6 +113,8 @@ class Detector(object):
             escalera = det is not None and det["huella"]
             if d == 0.0:
                 self.motivo, self.centro = motivo, centro
+                self.perfil = perfil_frente(fx, fy, h)
+                self.alto_cuerpo = z - suelo
             elif d == math.pi:
                 self.atras = (det if escalera else None, centro, ahora)
             if escalera and det["dist"] < 2.0:
@@ -476,10 +498,17 @@ class Maniobra(object):
         if (dz < -0.06) if bajando else (dz > 0.06):
             self.m["piso_cambio"] = True
         nivelado = abs(c["pitch"]) < NIVEL and abs(c["roll"]) < math.radians(6)
+        if abs(c["pitch"]) > INCLINADO:
+            self.m.setdefault("t_incl", ahora)
+            if ahora - self.m["t_incl"] >= T_INCLINADO:
+                self.m["inclinado"] = True
+        else:
+            self.m.pop("t_incl", None)
         estable = (len(hz) > 8 and hz[-1][0] - hz[0][0] > 1.3
                    and max(v for _, v in hz) - min(v for _, v in hz) < 0.03)
         self.info = "%s %.2f m, recorrido %.2f m" % ("bajado" if bajando else "subido", abs(dz), s)
-        # centrado entre las paredes/barandas de la escalera (si se ven)
+        # centrado entre las paredes/barandas de la escalera (si se ven: ver control.paredes_laterales).
+        # Corrige tambien la deriva de un rumbo unos grados torcido (el borde se mide en celdas de 5 cm)
         vy = 0.0
         if holg:
             izq, der = holg.get("pared_izq", math.inf), holg.get("pared_der", math.inf)
@@ -497,10 +526,13 @@ class Maniobra(object):
                 return 0.0, (0.08 if izq > der else -0.08), w
             self.info += " (algo en el camino, espero)"
             return None
-        hecho = (dz < -0.10) if bajando else (dz > 0.10)
-        if hecho and nivelado and estable:
-            if bajando or det.confirmada("subir", ahora, P) is None:
-                self.log("%s: %s" % ("abajo" if bajando else "arriba", self.info))
+        if bajando:
+            fin = self._fin_bajada(c, nivelado, estable, dz)
+            if fin is not None:
+                return fin
+        elif dz > 0.10 and nivelado and estable:
+            if det.confirmada("subir", ahora, P) is None:
+                self.log("arriba: %s" % self.info)
                 self.m["Ps"] = P.copy()
                 self._ir("SALIR", ahora)
                 return None
@@ -527,8 +559,32 @@ class Maniobra(object):
             self.info += " (empujando %.2f m/s: no avanzaba a %.2f)" % (min(v * g["k"], self.cfg.get("v_escalera_max", 0.40)), v)
         return sgn * v, vy, w
 
+    def _fin_bajada(self, c, nivelado, estable, dz):
+        """Bajando: el cuerpo volvio a quedar plano despues de ir inclinado (o, si el pitch no se
+        movio, la altura ya bajo y se estabilizo) -> para EN SECO y quita la marcha. Primero frena y
+        despues comprueba quieto T_PLANO s: si era un vaiven del paso, sigue bajando.
+        Devuelve (0, 0, 0) mientras comprueba, None si hay que seguir bajando."""
+        ahora = c["ahora"]
+        bajo = self.m.get("inclinado") or (dz < -0.10 and estable)
+        if not (bajo and nivelado):
+            if self.m.pop("t_plano", None) is not None:
+                self.info += " (no era el final: sigo)"
+            return None
+        self.m.setdefault("t_plano", ahora)
+        if ahora - self.m["t_plano"] < T_PLANO:
+            self.info += " (cuerpo plano: freno y compruebo)"
+            return 0.0, 0.0, 0.0
+        self.log("abajo, cuerpo plano: paro de ir para atras (%s)" % self.info)
+        self.m["dz"] = c["z"] - self.m["z0"]
+        self.m["espera"] = self.robot.modo_escaleras(False)
+        self.m["marcha"] = False
+        self.m["bal"] = False
+        self._ir("MARCHA_OFF", ahora)
+        return 0.0, 0.0, 0.0
+
     def _e_salir(self, c):
-        """Ya a nivel: unos 30 cm mas para dejar los escalones atras y quitar la marcha."""
+        """SUBIDA, ya arriba y a nivel: unos 30 cm mas de frente para dejar los escalones atras y
+        quitar la marcha. (La bajada no pasa por aca: para en seco al quedar plana.)"""
         bajando = self.bajando
         yref = self.m["yaw_b"] if bajando else self.m["yaw_n"]
         if np.linalg.norm(c["P"] - self.m["Ps"]) > 0.30 or c["dt"] > 3.5:

@@ -1257,6 +1257,10 @@ class Gestor(Node):
             self.politica, self.esc_vision, "OK" if self.vision_viva() else "NO llega"))
         txt += "delante del perro (lidar), bajada: %s\n" % (E.get("diagnostico") or "?")
         txt += "delante del perro (lidar), subida: %s\n" % (E.get("diagnostico_subida") or "?")
+        if E.get("perfil"):
+            txt += "lo que ve delante (cm sobre el suelo, cada 10 cm desde el hocico): %s\n" % E["perfil"]
+        if E.get("alto_cuerpo") is not None:
+            txt += "suelo estimado a %.0f cm bajo el cuerpo (normal ~30)\n" % (100 * E["alto_cuerpo"])
         txt += "para tomar la que tiene DELANTE ahora: go2 subir | go2 bajar\n"
         txt += "\n".join(lista + cand) or "(ninguna confirmada)"
         if self.descartadas:

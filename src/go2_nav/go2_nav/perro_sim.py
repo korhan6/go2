@@ -60,6 +60,10 @@ def elegir(nombre):
         return mundo_dos_puertas()
     if nombre == "simple":
         return M.cuarto_simple(), (1.5, 1.5, 0.3)
+    if nombre == "escalera":
+        # la escalera angosta de la casa: el perro abajo, con el hocico a 13 cm del primer escalon
+        # (y una pared 90 cm detras del pie de la escalera, para ver que la bajada para a tiempo)
+        return M.escalera_pasillo(pared_abajo=2.1), (3.0 - 0.36 - 0.13, 1.425, 0.0)
     return M.casa_demo(), (1.5, 1.5, 0.3)
 
 
@@ -78,7 +82,8 @@ class PerroSim(Node):
         inicio = self.declare_parameter("inicio", "").value      # "x,y,yaw" para empezar en otro lado
         if inicio:
             x, y, yaw = [float(v) for v in inicio.split(",")]
-        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido)
+        # en la escalera, el lidar como el L1 de verdad (mas bajo, no ve atras ni huellas mas altas que el)
+        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido, l1_real=(nombre == "escalera"))
         self.r.fantasmas = bool(fantasmas)
         self.t0 = time.monotonic()
         sd = qos_profile_sensor_data
@@ -157,6 +162,7 @@ class PerroSim(Node):
         self.pub_odom.publish(o)
         s = SportModeState()
         s.body_height = 0.32
+        s.imu_state.rpy = [float(roll), float(pitch), float(yaw)]
         s.mode = 1
         self.pub_sport.publish(s)
 

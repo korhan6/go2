@@ -110,14 +110,19 @@ def prueba_posible():
     print("   OK")
 
 
-def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0):
-    """La maniobra completa contra el simulador (como escaleras_nodo.lazo, a 10 Hz)."""
-    m = M.casa_demo()
-    if tipo == "bajar":
-        x, yaw = BORDE_BAJADA + terreno.LARGO2 + d_nose, math.pi
+def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pared_abajo=None, l1=False):
+    """La maniobra completa contra el simulador (como escaleras_nodo.lazo, a 10 Hz).
+    pasillo=True: la escalera angosta entre paredes de la casa del usuario (M.escalera_pasillo), con
+    el lidar como el L1 de verdad (l1=True: mas bajo, no ve atras ni huellas mas altas que el)."""
+    if pasillo:
+        m, borde, primero, y0 = M.escalera_pasillo(pared_abajo), 3.0 + 9 * 0.27, 3.0, 1.425
     else:
-        x, yaw = PRIMER_ESCALON - terreno.LARGO2 - d_nose, 0.0
-    r = M.RobotSim(m, x=x, y=6.6, yaw=yaw, ruido_real=True)
+        m, borde, primero, y0 = M.casa_demo(), BORDE_BAJADA, PRIMER_ESCALON, 6.6
+    if tipo == "bajar":
+        x, yaw = borde + terreno.LARGO2 + d_nose, math.pi
+    else:
+        x, yaw = primero - terreno.LARGO2 - d_nose, 0.0
+    r = M.RobotSim(m, x=x, y=y0, yaw=yaw, ruido_real=True, l1_real=l1 or pasillo)
     if zona_muerta > 0:
         # como el Go2 real: por debajo de zona_muerta m/s pisa en el sitio (avanza un 10 %)
         mover0 = r.mover
@@ -191,6 +196,17 @@ def prueba_empuje():
 def prueba_subir_pegado():
     print("== subir con el hocico PEGADO al primer escalon (13 cm), como en la casa real")
     res = correr("subir", 0.13)
+    assert res["ok"], res
+    print("== lo mismo en una escalera ANGOSTA entre paredes, con el lidar como el L1 de verdad")
+    for d in (0.13, 0.30, 0.8):
+        res = correr("subir", d, pasillo=True)
+        assert res["ok"], res
+    print("   OK")
+
+
+def prueba_bajar_pared():
+    print("== bajar de reversa con una PARED 70 cm detras del pie de la escalera: para al quedar plano")
+    res = correr("bajar", 0.6, pasillo=True, pared_abajo=3.0 - 0.70)
     assert res["ok"], res
     print("   OK")
 
@@ -396,6 +412,8 @@ if __name__ == "__main__":
         prueba_borde()
     if que in ("todo", "pegado"):
         prueba_subir_pegado()
+    if que in ("todo", "pared"):
+        prueba_bajar_pared()
     if que in ("bajar", "subir"):
         correr(que, verbose=True)
     print("LISTO")

@@ -150,6 +150,7 @@ morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 | Dos cuartos con dos puertas | 64 m² en 1.5 min, sin ir y venir entre puertas, 0 choques |
 | **Casa 14 × 10 m con entrepiso de 1.53 m, `go2 explorar` solo** | mapea la planta baja (128 m²), ve la escalera y NO dice "completo"; **sube de frente**, mapea arriba, **gira 180° y baja en reversa**, recarga el mapa de abajo y vuelve al inicio. 9 min, 0 choques |
 | Subir y bajar a mano (`go2 subir`, `go2 bajar`) | sube 1.53 m de frente; arriba gira 180° y baja de reversa hasta abajo |
+| Escalera **angosta entre paredes** (85 cm) con el lidar como el L1 de verdad (`prueba_nucleo.py pegado` y `pared`; con ROS, `prueba_escalera_angosta.py`) | sube con el hocico a 13 cm del primer escalón (también corrido 8 cm o torcido 8°); baja de reversa y para al quedar plano con una pared 70 cm detrás del pie: la cola queda a 12 cm (antes chocaba) |
 | `guardar A` → explorar → `ir A` | llega a 3 cm de A |
 | `calibrar` con fantasmas pegados al cuerpo | adelante 0.17 → 3.06 m; luego explora normal |
 | Tu grabación real (18-oct) por el limpiador | lados limpios, 0 caídas falsas con 19 % de reflejos, 3 ms por nube |
@@ -193,11 +194,15 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
   2. se alinea y se centra, y se pone a 65 cm del borde;
   3. **gira 180°**, comprueba por odometría que el borde quedó detrás (y que detrás no hay suelo
      firme ni una pared, si el lidar llega a ver), pone la marcha y **baja de espaldas**;
-  4. abajo, sale 30 cm, quita la marcha y se vuelve a poner de frente.
+  4. abajo, **apenas el cuerpo vuelve a quedar plano** (las 4 patas en el piso: lo dice el IMU),
+     frena en seco y no da ni un paso más de reversa (atrás el lidar no ve nada). Quita la marcha
+     y, si hay espacio, se vuelve a poner de frente.
 - **Seguridad:**
   - **solo para dentro de la casa:** todo desnivel empinado de borde recto se toma como escalera
     de bajada (no hace falta ver el primer escalón; no hay balcones). Una rampa suave no es escalera;
   - si pasó el borde y no bajó nada, se detiene;
+  - encima de los escalones se **centra entre las paredes/barandas** (antes tomaba los escalones
+    de al lado por "pared" y en una escalera angosta se iba de a poco contra una pared);
   - antes de pisar los escalones, cualquier duda = cancela;
   - ya encima de los escalones nunca cambia de marcha: si algo falla queda **DETENIDO** y
     espera `go2 seguir` o el control remoto.
@@ -217,22 +222,21 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
 - Un "la cámara mira ahí y no ve escalera" descarta la candidata **2 minutos**, no para siempre.
 
 ### Por qué una BAJADA se ve solo de cerca (geometría del L1)
-El L1 va en la cabeza, a ~30 cm del suelo. Un escalón de 17 cm queda en su **sombra** durante
+El L1 va en la cabeza, a ~25 cm del suelo. Un escalón de 17 cm queda en su **sombra** durante
 0.57 × (distancia al borde): con el hocico a 0.7 m del borde no se ve **nada** del primer escalón
-(solo "una caída"), a 0.35 m se ven ~10 cm de huella, y pegado al borde deja de ver el suelo de
-delante. Por eso go2_escaleras se acerca despacio hasta 25 cm del borde (los pies quedan a
-42 cm) y, si se pasó, retrocede. Medido con `python3 pruebas/prueba_nucleo.py deteccion`.
+(solo "una caída"). Como dentro de la casa toda caída empinada de borde recto es escalera, igual
+se confirma de lejos (con el hocico a 1 m, en 0.4 s). Medido con
+`python3 pruebas/prueba_nucleo.py deteccion`.
 
 ### Si NO bajó la escalera, mira esto (en este orden)
 ```
 go2 escaleras        # que ve el lidar delante y por que (no) lo toma por escalera
 go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'frontera ...'
 ```
-1. **`go2 escaleras` dice `caida a X m pero NO veo el primer escalon`** → el lidar ve el
-   desnivel pero no la huella: está lejos del borde (> 0.55 m) o el primer escalón es raro
-   (muy alto, > 30 cm; alfombra oscura; borde con listón). Acércalo con `go2 manejar` hasta
-   ~30 cm del borde y vuelve a mirar. Si sigue sin verla, con `go2 bajar` tampoco va a bajar:
-   **por diseño** (sin huella vista = balcón).
+1. **`go2 escaleras` dice `baja solo en N de 4 carriles`, `algo delante` o `no veo el suelo
+   delante`** → ponlo de frente y centrado, a 0.5–1 m del borde, y vuelve a mirar. Las líneas
+   `lo que ve delante (cm ...)` y `suelo estimado a X cm bajo el cuerpo` son lo que mide el lidar:
+   si el suelo no sale ~30 cm, mándame una foto de eso.
 2. **En el log sale `DESCARTO la escalera de bajar ... la camara`** → versión anterior o
    `go2 escaleras vision requerida`: la cámara nunca ve una bajada desde arriba. Pon
    `go2 escaleras vision subida` (ahora es el valor por defecto).
@@ -267,10 +271,12 @@ go2 altura 0     # vuelve a la normal
 Si dice "RECHAZO", tu firmware no la permite en esa marcha y no hace nada (no es peligroso).
 
 ### Subir una escalera (lo más seguro)
-Llévalo (con `go2 manejar` o el control) hasta 0.5–1 m delante del primer escalón, mirándolo de
-frente y centrado, sal de `manejar` con x, y:
+Llévalo (con `go2 manejar` o el control) delante del primer escalón, mirándolo de frente y
+centrado: sirve **desde pegado al escalón** (`manejar` frena a 20 cm) hasta ~2 m. Si queda a menos
+de 10 cm, retrocede solo un poco para ver el primer escalón. Sal de `manejar` con x, y:
 ```
 go2 escaleras   # "subida: escalera de SUBIDA a X m" = la ve. Si dice "no veo escalones", acomódalo
+                # (y mira "suelo estimado a X cm": tiene que salir ~30)
 go2 subir       # se alinea, se centra, pone la marcha de escaleras y sube DE FRENTE; arriba empieza
                 # el mapa de ese piso
 ```
@@ -304,6 +310,7 @@ limpiador consumen ~1–2 núcleos. Si la CPU va justa:
 python3 pruebas/prueba_nucleo.py           # deteccion de bajadas por distancia, balcon, posible bajada -> verla de cerca,
                                            # subir y bajar en el simulador, fronteras
 python3 pruebas/prueba_nucleo.py bajar     # la bajada en reversa paso a paso
+python3 pruebas/prueba_escalera_angosta.py # con ROS: la escalera angosta de la casa (subir y bajar)
 ```
 Solo necesita numpy y scipy. `pruebas/prueba_e2e.py` y `prueba_escalera.py` lanzan todo con ROS 2.
 

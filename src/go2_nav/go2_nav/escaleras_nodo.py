@@ -34,6 +34,7 @@ from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 
 from go2_nav_interfaces.srv import Comando
+from unitree_go.msg import SportModeState
 
 from .nube import leer_xyz, rpy_de_quat
 from .nucleo import config, terreno
@@ -70,6 +71,7 @@ class Escaleras(Node):
         self.detector = Detector()
         self.maniobra = Maniobra(RobotMarcha(self), self.cfg, self.log)
         self.pose = None
+        self.imu = None             # (roll, pitch, t) del IMU del perro
         self.suelo = None
         self.nubes = []
         self.holg = None
@@ -83,6 +85,8 @@ class Escaleras(Node):
         self.create_subscription(PointCloud2, self.declare_parameter("topico_nube", "/go2/nube_sin_fantasmas").value,
                                  self.cb_nube, sd)
         self.create_subscription(Odometry, "/odom", self.cb_odom, sd)   # la del driver (1 sola copia desde el perro)
+        # inclinacion del cuerpo del IMU del perro: la bajada termina cuando el cuerpo queda plano
+        self.create_subscription(SportModeState, "/lf/sportmodestate", self.cb_sport, sd)
         self.pub_esc = self.create_publisher(String, "/go2/escaleras", 1)
         self.pub_est = self.create_publisher(String, "/go2/escalera_estado", 1)
         self.pub_vel = self.create_publisher(Twist, "cmd_vel_prioridad", 10)
@@ -101,7 +105,17 @@ class Escaleras(Node):
     def cb_odom(self, m):
         p = m.pose.pose.position
         yaw, pitch, roll = rpy_de_quat(m.pose.pose.orientation)
+        if self.imu is not None and time.monotonic() - self.imu[2] < 0.5:
+            # la inclinacion mayor de las dos (odometria del lidar e IMU): "plano" = plano en las dos
+            if abs(self.imu[1]) > abs(pitch):
+                pitch = self.imu[1]
+            if abs(self.imu[0]) > abs(roll):
+                roll = self.imu[0]
         self.pose = (p.x, p.y, p.z, yaw, pitch, roll)
+
+    def cb_sport(self, m):
+        r = m.imu_state.rpy
+        self.imu = (float(r[0]), float(r[1]), time.monotonic())
 
     def cb_nube(self, m):
         self.nubes.append(leer_xyz(m))
@@ -188,6 +202,19 @@ class Escaleras(Node):
             # no cuentan. hueco = el suelo se acaba sin nada visible (balcon): tampoco se acerca
             d_ob, d_ca, d_hu = h["adelante"]
             libre = min(d_ca, d_hu, d_ob)
+            # subida con el hocico PEGADO al escalon (< 10 cm): la cabeza tapa el primer escalon y no
+            # se confirma. Retrocede despacio hasta ~15 cm (como mucho 20 cm: atras no se ve)
+            g = e.get("atras")
+            if (e["tipo"] == "subir" and ahora - e["t_quieto"] > 2.0 and
+                    (g is not None or d_ob < 0.10) and (g is None or g["activo"])):
+                g = e.setdefault("atras", {"p": (x, y), "activo": True, "emp": {"v": 0.10, "t": ahora, "p": (x, y)}})
+                atras = math.hypot(x - g["p"][0], y - g["p"][1])
+                if d_ob < 0.15 and atras < 0.20 and h["atras"][0] > 0.15:
+                    e["freno"] = "pegado al escalon (%.0f cm): retrocedo un poco para verlo" % (100 * d_ob)
+                    self.mover(-self._v_acercar(g, ahora, (x, y), 0.25), 0.0, max(-0.3, min(0.3, 1.2 * err)))
+                    return
+                g["activo"] = False
+                self.log("retrocedi %.2f m para ver el primer escalon" % atras)
             if libre > d_min:
                 # el Go2 no camina a 0.07 m/s (pisa en el sitio): arranca a 0.10 y, si no avanza,
                 # sube de a poco hasta 0.25 m/s (mas despacio cerca del borde)
@@ -276,6 +303,8 @@ class Escaleras(Node):
                # lo que el lidar ve delante y por que (no) es una bajada: 'go2 escaleras'
                "delante": self.detector.centro, "diagnostico": self.detector.motivo,
                "diagnostico_subida": self.detector.motivo_subida,
+               "perfil": self.detector.perfil,
+               "alto_cuerpo": None if self.detector.alto_cuerpo is None else round(self.detector.alto_cuerpo, 3),
                "en_escalera": bool(m.en_escalera(self.pose[4] if self.pose else 0.0)),
                "detenido": m.estado == "DETENIDO", "motivo_detenido": m.m.get("motivo_det", ""),
                "resultado": self.resultado, "log": self.logs[-1] if self.logs else "",
