@@ -1,7 +1,8 @@
 """Escaleras: confirmacion (subida y bajada) y maniobra.
 
 SUBIR (de frente):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> ACERCAR -> MARCHA_ON -> SUBIENDO
-                    -> SALIR -> MARCHA_OFF -> LISTO
+                    -> MARCHA_OFF -> LISTO
+                    (SUBIENDO para en seco cuando el cuerpo queda plano arriba: "LLEGUE ARRIBA")
 BAJAR (SIEMPRE en reversa):  DETENER -> ALINEAR -> MEDIR -> CENTRAR -> DISTANCIA -> GIRAR 180
                     (-> ESPACIO si no cabe girando: se aleja de lo que estorba y vuelve a GIRAR)
                     -> VERIFICAR -> MARCHA_ON -> BAJANDO (de reversa) -> MARCHA_OFF -> LISTO
@@ -48,12 +49,12 @@ D_SUBIR = 0.45                           # subida: centro del perro a 45 cm del 
 # s maximos por estado (los giros esperan quieto entre pulsos finos: ver _girar_a)
 LIMITE = {"DETENER": 3, "ALINEAR": 25, "MEDIR": 10, "CENTRAR": 10, "DISTANCIA": 12,
           "ACERCAR": 12, "GIRAR": 30, "ESPACIO": 10, "VERIFICAR": 6, "MARCHA_ON": 10, "BAJANDO": 90,
-          "SUBIENDO": 90, "SALIR": 5, "MARCHA_OFF": 10, "RESTAURAR": 10}
-EN_ESCALERA = ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
+          "SUBIENDO": 90, "MARCHA_OFF": 10, "RESTAURAR": 10}
+EN_ESCALERA = ("SUBIENDO", "BAJANDO", "DETENIDO")
 # EMPUJE: el Go2 casi no camina por debajo de ~0.20 m/s (pisa en el sitio) y en la escalera necesita
 # a veces mas. Si avanza menos del 40 % de lo que se le pide, la velocidad sube 3 cm/s cada 0.5 s
 # (hasta v_escalera_max) y se mantiene cuando ya avanza. Solo en los estados que caminan.
-CAMINAN = ("CENTRAR", "DISTANCIA", "ACERCAR", "BAJANDO", "SUBIENDO", "SALIR", "MEDIR", "ESPACIO")
+CAMINAN = ("CENTRAR", "DISTANCIA", "ACERCAR", "BAJANDO", "SUBIENDO", "MEDIR", "ESPACIO")
 EMPUJE_PASO, EMPUJE_CADA, EMPUJE_VENTANA = 0.03, 0.5, 0.8
 # Alinearse SIN PASARSE con un perro que responde tarde (~0.3 s) y no gira lento (w_min):
 #   grueso: gira normal hasta que lo que falta (contando lo que va a seguir girando) es ZONA_FINA;
@@ -103,6 +104,7 @@ class Detector(object):
         self.atras = (None, "nada", 0.0)     # (deteccion, estado_centro, t) mirando hacia atras
         self.motivo = ""                      # lo que hay delante, en palabras (bajada)
         self.motivo_subida = ""               # idem, para una escalera de subida
+        self.subida_frente = (None, -1e9)     # (terreno.analizar_subida delante, t): lo de AHORA, sin historia
         self.centro = "nada"                  # 'caida' | 'suelo' | 'pared' | 'nada' delante
         self.perfil = ""                      # alturas (cm) delante del hocico, cada 10 cm: 'go2 escaleras'
         self.alto_cuerpo = None               # m del cuerpo sobre el suelo estimado (normal ~0.30)
@@ -152,6 +154,7 @@ class Detector(object):
                 self._sumar("bajar", det, x, y, yd, suelo, ahora)
             sub = terreno.analizar_subida(fx, fy, h)
             if d == 0.0:
+                self.subida_frente = (sub, ahora)
                 self.motivo_subida = ("escalera de SUBIDA a %.2f m (ancho %.2f m)" % (sub["dist"], sub["ancho"])
                                       if sub is not None else
                                       "no veo escalones de subida delante (de frente, a 0.5-2 m, centrado)")
@@ -636,7 +639,7 @@ class Maniobra(object):
         """Encima de los escalones: avanza (hacia atras si baja) DERECHO y CENTRADO segun la escalera
         que ve delante, y espera si algo se cruza. Termina en cuanto el cuerpo vuelve a quedar plano
         (o casi) despues de ir inclinado."""
-        ahora, P, z, yaw, holg, det = c["ahora"], c["P"], c["z"], c["yaw"], c["holg"], c["det"]
+        ahora, P, z, yaw, holg = c["ahora"], c["P"], c["z"], c["yaw"], c["holg"]
         if self.m.get("P0") is None:           # retomado despues de DETENIDO
             self.m.update(P0=P.copy(), mov=(ahora, P.copy()), hz=[])
         yref = self.m["yaw_b"] if bajando else self.m["yaw_n"]
@@ -676,17 +679,9 @@ class Maniobra(object):
                 return 0.0, (0.08 if izq > der else -0.08), w
             self.info += " (algo en el camino, espero)"
             return None
-        if bajando:
-            fin = self._fin_bajada(c, nivelado, estable, dz, pf)
-            if fin is not None:
-                return fin
-        elif dz > 0.10 and ((self.m.get("inclinado") and nivelado) or (estable and abs(pf) < PLANO_MAX)):
-            if det.confirmada("subir", ahora, P) is None:
-                self.log("LLEGUE ARRIBA: %s" % self.info)
-                self.m["Ps"] = P.copy()
-                self._ir("SALIR", ahora)
-                return None
-            # descanso con mas escalones delante: sigue subiendo
+        fin = self._fin_escalera(c, bajando, nivelado, estable, dz, pf, s)
+        if fin is not None:
+            return fin
         t0, p0 = self.m["mov"]
         if np.linalg.norm(P - p0) > 0.04:
             self.m["mov"] = (ahora, P.copy())
@@ -709,44 +704,48 @@ class Maniobra(object):
             self.info += " (empujando %.2f m/s: no avanzaba a %.2f)" % (min(v * g["k"], self.cfg.get("v_escalera_max", 0.40)), v)
         return sgn * v, vy, w
 
-    def _fin_bajada(self, c, nivelado, estable, dz, pf):
-        """Bajando: el cuerpo volvio a quedar plano (o casi) despues de ir inclinado -> para EN SECO,
-        dice LLEGUE ABAJO y quita la marcha. Si el pitch nunca se movio: la altura ya bajo y se
-        estabilizo. Primero frena y despues comprueba quieto T_PLANO s: si era un vaiven, sigue.
-        Devuelve (0, 0, 0) mientras comprueba, None si hay que seguir bajando."""
+    def _fin_escalera(self, c, bajando, nivelado, estable, dz, pf, s):
+        """Fin de la escalera, subiendo o bajando: el cuerpo volvio a quedar PLANO (o casi) despues de
+        ir inclinado -> para EN SECO, dice LLEGUE ARRIBA / LLEGUE ABAJO y quita la marcha. Si el pitch
+        nunca se movio: la altura ya cambio y se estabilizo. Primero frena y despues comprueba quieto
+        T_PLANO s: si era un vaiven, sigue. Subiendo, si delante hay mas escalones AHORA (un descanso),
+        sigue subiendo. Antes, arriba seguia de frente: miraba si "habia escalera delante" con lo
+        visto en los ultimos 4 s (la misma escalera que acababa de subir), y despues caminaba 30 cm
+        mas; y exigia que la odometria marcara 10 cm de altura.
+        Devuelve (0, 0, 0) mientras comprueba, None si hay que seguir."""
         ahora = c["ahora"]
-        bajo = ((self.m.get("inclinado") and nivelado)
-                or (dz < -0.10 and estable and abs(pf) < PLANO_MAX))
-        if not bajo:
+        cambio = (dz < -0.10) if bajando else (dz > 0.10)
+        llego = ((self.m.get("inclinado") and nivelado and (bajando or cambio or s > 0.8))
+                 or (cambio and estable and abs(pf) < PLANO_MAX))
+        if llego and not bajando:
+            sub, t_sub = c["det"].subida_frente if c["det"] is not None else (None, -1e9)
+            if sub is not None and ahora - t_sub < 0.6 and sub["dist"] < 1.2:
+                llego = False                       # descanso con mas escalones delante: sigue subiendo
+                self.info += " (descanso: hay mas escalones delante)"
+        if not llego:
+            self.m.pop("quieto", None)
             if self.m.pop("t_plano", None) is not None:
                 self.info += " (no era el final: sigo)"
             return None
         self.m.setdefault("t_plano", ahora)
-        if ahora - self.m["t_plano"] < T_PLANO:
+        # quieto de verdad antes de cambiar de marcha (cambiarla todavia andando da un tiron)
+        q = self.m.setdefault("quieto", [ahora, c["P"].copy()])
+        if float(np.linalg.norm(c["P"] - q[1])) > 0.006:
+            q[0], q[1] = ahora, c["P"].copy()
+        quieto = ahora - q[0] >= 0.3
+        if ahora - self.m["t_plano"] < T_PLANO or (not quieto and ahora - self.m["t_plano"] < 1.5):
             self.info += " (cuerpo plano: freno y compruebo)"
             return 0.0, 0.0, 0.0
-        self.log("LLEGUE ABAJO: cuerpo plano, paro de ir para atras y me quedo mirando la escalera (%s)" % self.info)
+        if bajando:
+            self.log("LLEGUE ABAJO: cuerpo plano, paro de ir para atras y me quedo mirando la escalera (%s)" % self.info)
+        else:
+            self.log("LLEGUE ARRIBA: cuerpo plano, paro (%s)" % self.info)
         self.m["dz"] = c["z"] - self.m["z0"]
         self.m["espera"] = self.robot.modo_escaleras(False)
         self.m["marcha"] = False
         self.m["bal"] = False
         self._ir("MARCHA_OFF", ahora)
         return 0.0, 0.0, 0.0
-
-    def _e_salir(self, c):
-        """SUBIDA, ya arriba y a nivel: unos 30 cm mas de frente para dejar los escalones atras y
-        quitar la marcha. (La bajada no pasa por aca: para en seco al quedar plana.)"""
-        bajando = self.bajando
-        yref = self.m["yaw_b"] if bajando else self.m["yaw_n"]
-        if np.linalg.norm(c["P"] - self.m["Ps"]) > 0.30 or c["dt"] > 3.5:
-            self.m["dz"] = c["z"] - self.m["z0"]
-            self.m["espera"] = self.robot.modo_escaleras(False)
-            self.m["marcha"] = False
-            self.m["bal"] = False
-            self._ir("MARCHA_OFF", c["ahora"])
-            return None
-        v = self.cfg["v_bajar"] if bajando else self.cfg["v_subir"] * 0.7
-        return (-v if bajando else v), 0.0, self._w_rumbo(yref, c["yaw"])
 
     def _e_marcha_off(self, c):
         if c["dt"] > self.m["espera"] and not self.m.get("bal"):

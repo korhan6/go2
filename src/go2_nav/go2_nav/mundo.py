@@ -121,11 +121,12 @@ def mundo_puerta():
     return m, (5.0, 2.2, math.pi / 2)
 
 
-def escalera_pasillo(pared_abajo=None):
+def escalera_pasillo(pared_abajo=None, pared_arriba=None):
     """Como la escalera de la casa del usuario (fotos del 19/20-oct): 9 escalones de 17 cm entre dos
     paredes (85 cm de ancho), con el pasillo de abajo igual de angosto. Sube hacia +x desde x = 3.0;
     arriba, un pasillo ancho a 1.53 m desde x = 5.43. pared_abajo = x de una pared detras del pie de la escalera
-    (para ver que la bajada en reversa para a tiempo)."""
+    (para ver que la bajada en reversa para a tiempo). pared_arriba = x de una pared enfrente del
+    final de la subida (para ver que al llegar arriba no sigue de frente)."""
     m = Mundo(8.0, 3.0)
     arriba = 3.0 + 9 * 0.27
     m.rect_altura(arriba, 0.0, 8.0, 3.0, 1.53)                 # arriba: un pasillo ancho
@@ -136,6 +137,8 @@ def escalera_pasillo(pared_abajo=None):
     m.rect_pared(0.5, 1.85, arriba, 1.9)
     if pared_abajo is not None:
         m.rect_pared(pared_abajo - 0.05, 1.0, pared_abajo, 1.85)
+    if pared_arriba is not None:                     # pared enfrente, arriba (ver que para al llegar)
+        m.rect_pared(pared_arriba, 0.0, pared_arriba + 0.05, 3.0)
     return m
 
 

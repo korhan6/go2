@@ -112,7 +112,7 @@ def prueba_posible():
 
 
 def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pared_abajo=None, l1=False,
-           ralo=0, dy=0.0, dyaw=0.0, odom_yaw=0.0, deriva=(0.0, 0.0)):
+           ralo=0, dy=0.0, dyaw=0.0, odom_yaw=0.0, deriva=(0.0, 0.0), pared_arriba=None):
     """La maniobra completa contra el simulador (como escaleras_nodo.lazo, a 10 Hz).
     pasillo=True: la escalera angosta entre paredes de la casa del usuario (M.escalera_pasillo), con
     el lidar como el L1 de verdad (l1=True: mas bajo, no ve atras ni huellas mas altas que el).
@@ -121,7 +121,7 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
     con la escalera, como en la casa). deriva = (vy, wz) que el perro hace de mas, solo, encima de
     los escalones (patinadas: el perro real se iba en diagonal)."""
     if pasillo:
-        m, borde, primero, y0 = M.escalera_pasillo(pared_abajo), 3.0 + 9 * 0.27, 3.0, 1.425
+        m, borde, primero, y0 = M.escalera_pasillo(pared_abajo, pared_arriba), 3.0 + 9 * 0.27, 3.0, 1.425
     else:
         m, borde, primero, y0 = M.casa_demo(), BORDE_BAJADA, PRIMER_ESCALON, 6.6
     if tipo == "bajar":
@@ -150,6 +150,7 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
     det, mem = Detector(), Memoria()
     hist_alto = collections.deque(maxlen=8)
     desvio = [0.0]
+    plano = {"P": None}            # donde el cuerpo quedo plano (las 4 patas en el piso de llegada)
     man = Maniobra(RobotMarcha(r), cfg, (lambda t: print("   %6.1f  %s" % (r.t, t))) if verbose else (lambda t: None))
     suelo, pedido = None, False
     ordenes = {"BAJANDO": [], "SUBIENDO": []}
@@ -169,7 +170,7 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         if not nuevas:
             mem.sumar(np.zeros((0, 3), np.float32), px, py, ahora)
         local = mem.puntos()
-        en_esc = man.estado in ("SUBIENDO", "BAJANDO", "SALIR", "DETENIDO")
+        en_esc = man.estado in ("SUBIENDO", "BAJANDO", "DETENIDO")
         suelo = (pz - terreno.ALTURA_BASE) if en_esc else terreno.suelo_abs(local, px, py, pz, yw, previo=suelo)
         holg, _ = guardian(local, (px, py, pz, yw), suelo, cfg, rampa=abs(pitch) > math.radians(4))
         if nuevas and len(local):
@@ -189,6 +190,9 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
             vx, vy, wz = man.paso(ahora, (px, py, pz, yw, pitch, roll), det, holg)
             if man.estado in ordenes:
                 ordenes[man.estado].append(vx)
+                llegada = 1.83 if tipo == "subir" else 0.30
+                if plano["P"] is None and abs(r.z - llegada) < 0.02 and abs(r.pitch) < 0.02:
+                    plano["P"] = (r.x, r.y)
                 if abs(r.z - 0.30) > 0.05 and abs(r.z - 1.83) > 0.05:      # encima de los escalones
                     desvio[0] = max(desvio[0], abs(r.y - y0))
             r.mover(vx, vy, wz)
@@ -197,8 +201,10 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         else:
             raise AssertionError("DETENIDO en la escalera: %s" % man.m.get("motivo_det"))
     res = man.resultado
-    print("   %s: %s | z %.2f -> %.2f | choques %d | %.0f s | desvio del centro max %.0f cm" % (
-        tipo, res and res["motivo"], 0.3 if tipo == "subir" else 1.83, r.z, r.choques, r.t, 100 * desvio[0]))
+    extra = math.hypot(r.x - plano["P"][0], r.y - plano["P"][1]) if plano["P"] else float("nan")
+    print("   %s: %s | z %.2f -> %.2f | choques %d | %.0f s | desvio del centro max %.0f cm | ya plano camino %.2f m" % (
+        tipo, res and res["motivo"], 0.3 if tipo == "subir" else 1.83, r.z, r.choques, r.t, 100 * desvio[0], extra))
+    res["extra"] = extra
     assert res and res["ok"], res
     assert r.choques == 0
     if tipo == "bajar":
@@ -249,6 +255,14 @@ def prueba_variantes(todas=False):
             print("   FALLA %s %.2f %s: %s" % (tipo, d, kw, str(e)[:100]))
     assert not malos, "%d de %d casos fallaron" % (len(malos), len(casos))
     print("   OK (%d casos)" % len(casos))
+
+
+def prueba_subir_pared():
+    print("== subir con una PARED 80 cm despues del ultimo escalon: arriba, al quedar plano, para")
+    res = correr("subir", 0.5, pasillo=True, pared_arriba=5.16 + 0.80)
+    assert res["ok"], res
+    assert res["extra"] < 0.25, "ya arriba y plano, no puede seguir caminando de frente (%.2f m)" % res["extra"]
+    print("   OK")
 
 
 def prueba_bajar_pared():
@@ -503,6 +517,7 @@ if __name__ == "__main__":
         prueba_subir_pegado()
     if que in ("todo", "pared"):
         prueba_bajar_pared()
+        prueba_subir_pared()
     if que in ("todo", "variantes", "variantes_todas"):
         prueba_variantes(todas=(que == "variantes_todas"))
     if que in ("bajar", "subir"):

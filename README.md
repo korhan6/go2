@@ -217,7 +217,11 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
 - **Mientras queden escaleras sin usar, el mapeo NO está completo.** Con `al_final` (por
   defecto) termina el piso, va a la escalera y la toma; mapea el otro piso y vuelve.
 - **Subida: SIEMPRE de frente.** Se alinea, se centra, se acerca a 45 cm del primer escalón, pone
-  la marcha de escaleras y sube.
+  la marcha de escaleras y sube. **Arriba, apenas el cuerpo queda plano** (las 4 patas en el piso),
+  frena y dice **`LLEGUE ARRIBA`**. Antes seguía de frente: creía que "había más escalera delante"
+  con lo que había visto en los últimos 4 s (la misma escalera que acababa de subir) y después
+  caminaba 30 cm más. Ahora solo sigue si AHORA ve más escalones delante (un descanso). Con una
+  pared 80 cm después del último escalón: antes chocaba, ahora para a 7 cm de quedar plano.
 - **Cualquier bajada es una escalera** (dentro de la casa no hay barrancos ni balcones): basta con
   que el piso se corte hacia abajo en 2 de los 4 carriles del centro, sin importar si el borde es
   recto (escaleras curvas o en abanico) ni si se ve el primer escalón. La confirma desde ~5 cm hasta
