@@ -14,6 +14,7 @@ Lo que comprueba:
   - la bajada se hace SIEMPRE en reversa (gira 180 antes del borde) y la subida de frente;
   - la exploracion encuentra la puerta de un cuarto como frontera.
 """
+import collections
 import math
 import os
 import sys
@@ -147,6 +148,7 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         r.mover = mover_deriva
     cfg = dict(config.DEFECTO)
     det, mem = Detector(), Memoria()
+    hist_alto = collections.deque(maxlen=8)
     desvio = [0.0]
     man = Maniobra(RobotMarcha(r), cfg, (lambda t: print("   %6.1f  %s" % (r.t, t))) if verbose else (lambda t: None))
     suelo, pedido = None, False
@@ -159,6 +161,7 @@ def correr(tipo, d_nose=0.6, verbose=False, zona_muerta=0.0, pasillo=False, pare
         crudos = []
         for _t, xyz in nuevas:
             limpio = terreno.corregir_cerca(terreno.quitar_propio(xyz, px, py, pz, yw, suelo), px, py, yw, cfg["sesgo_cerca"])
+            limpio = terreno.quitar_reflejos(limpio, suelo if suelo is not None else pz - terreno.ALTURA_BASE, hist_alto)
             if ralo and len(limpio) > ralo:
                 limpio = limpio[r.rng.random(len(limpio)) < ralo / len(limpio)]
             crudos.append(limpio)
@@ -372,6 +375,53 @@ def prueba_alinear():
     print("   OK")
 
 
+def caidas_como_limpiador(xyz, px, py, pz, yw, hist, hist_alto=None):
+    """Las celdas de caida como las marca go2_limpiador (sin reflejos, solo cerca del lidar, nunca
+    debajo de algo). hist: deque(maxlen=6) de la pasada anterior."""
+    suelo = pz - 0.30
+    xyz = terreno.corregir_cerca(xyz, px, py, yw, (0.14, 0.19))
+    if hist_alto is not None:
+        xyz = terreno.quitar_reflejos(xyz, suelo, hist_alto)
+    h = xyz[:, 2] - suelo
+    hist.append((xyz[h < -0.12], xyz[np.abs(h) < 0.06][:, :2], xyz[(h > -0.05) & (h < 1.0)][:, :2],
+                 xyz[(h > 0.08) & (h < 1.5)][:, :2]))
+    B = np.concatenate([b for b, _, _, _ in hist])
+    lid = (px + 0.30 * math.cos(yw), py + 0.30 * math.sin(yw))
+    return terreno.caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], np.concatenate([p for _, p, _, _ in hist]),
+                                  px, py, algo=np.concatenate([a for _, _, a, _ in hist]),
+                                  alto=np.concatenate([a for _, _, _, a in hist]), centro=lid, r_max=2.0, h_lidar=0.25, yaw=yw)
+
+
+def prueba_brillo():
+    print("== piso de ceramica BRILLANTE (la mesa y las paredes se ven espejadas debajo del piso)")
+    import collections
+    m = M.Mundo(8.0, 6.0)
+    m.mesa(3.0, 2.2, 4.2, 3.0, 0.72)
+    for qx, qy in ((3.05, 2.25), (4.11, 2.25), (3.05, 2.91), (4.11, 2.91)):
+        m.rect_pared(qx, qy, qx + 0.04, qy + 0.04)
+    m.rect_pared(5.5, 1.0, 5.6, 5.0)
+    m.rect_pared(2.0, 4.2, 4.0, 4.3)
+    for x in (1.0, 1.6, 2.2):
+        r = M.RobotSim(m, x=x, y=2.6, yaw=0.0, ruido_real=True, l1_real=True, piso_brillante=True)
+        hist, hist_alto, det, mem, suelo = collections.deque(maxlen=6), collections.deque(maxlen=8), Detector(), Memoria(), None
+        falsas = 0
+        for k in range(15):
+            r.dormir(0.1)
+            px, py, pz, yw, *_ = r.pose()
+            for _t, xyz in r.nubes_nuevas():
+                falsas = max(falsas, len(caidas_como_limpiador(xyz, px, py, pz, yw, hist, hist_alto)))
+                limpio = terreno.quitar_reflejos(terreno.corregir_cerca(terreno.quitar_propio(xyz, px, py, pz, yw, suelo),
+                                                                        px, py, yw, (0.14, 0.19)), pz - 0.30)
+                mem.sumar(limpio, px, py, r.t)
+            local = mem.puntos()
+            suelo = terreno.suelo_abs(local, px, py, pz, yw, previo=suelo)
+            det.actualizar(local, (px, py, pz, yw), suelo, r.t)
+        bajada = det.confirmada("bajar", r.t, (px, py)) is not None
+        print("   perro a %.1f m de la mesa: celdas de caida falsas %d | escalera de bajada falsa: %s" % (3.0 - 0.36 - x, falsas, bajada))
+        assert falsas == 0 and not bajada, "el reflejo del piso no puede ser caida ni escalera"
+    print("   OK")
+
+
 def prueba_borde():
     print("== marca de caida en el mapa de costos: en el borde real, y nunca pegada al hocico")
     import collections
@@ -383,13 +433,7 @@ def prueba_borde():
             r.dormir(0.1)
             for _t, xyz in r.nubes_nuevas():
                 px, py, pz, yw, *_ = r.pose()
-                suelo = pz - 0.30
-                xyz = terreno.corregir_cerca(xyz, px, py, yw, (0.14, 0.19))
-                h = xyz[:, 2] - suelo
-                hist.append((xyz[h < -0.12], xyz[np.abs(h) < 0.06][:, :2], xyz[(h > -0.05) & (h < 1.0)][:, :2]))
-                B = np.concatenate([b for b, _, _ in hist])
-                cel = terreno.caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], np.concatenate([p for _, p, _ in hist]),
-                                             px, py, algo=np.concatenate([a for _, _, a in hist]))
+                cel = caidas_como_limpiador(xyz, px, py, pz, yw, hist)
                 sel = cel[(np.abs(cel[:, 1] - 4.55) < 0.2) & (cel[:, 0] < 4.6)] if len(cel) else cel
                 if k > 5 and len(sel):
                     mas.append(sel[:, 0].max() + 0.05 - 4.2)
@@ -454,6 +498,7 @@ if __name__ == "__main__":
         prueba_empuje()
     if que in ("todo", "borde"):
         prueba_borde()
+        prueba_brillo()
     if que in ("todo", "pegado"):
         prueba_subir_pegado()
     if que in ("todo", "pared"):

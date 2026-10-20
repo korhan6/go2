@@ -20,6 +20,7 @@ Salidas:  /go2/escaleras (JSON: escaleras confirmadas y posibles bajadas, marco 
           /go2/marcha (String: escaleras_on | escaleras_off | balancear) -> go2_driver
 Servicio: /go2/escalera  (orden: tomar <subir|bajar> <yaw_odom> | parar | seguir)
 """
+import collections
 import json
 import math
 import time
@@ -72,11 +73,13 @@ class Escaleras(Node):
         self.maniobra = Maniobra(RobotMarcha(self), self.cfg, self.log)
         self.pose = None
         self.imu = None             # (roll, pitch, t) del IMU del perro
+        self.hist_alto = collections.deque(maxlen=8)     # celdas con algo arriba del piso (reflejos)
         self.suelo = None
         self.nubes = []
         self.holg = None
         self.espera = None          # acercamiento antes de empezar: dict
         self.t_alrededor = 0.0
+        self.t_fino = 0.0
         self.resultado = None
         self.logs = []
 
@@ -132,6 +135,9 @@ class Escaleras(Node):
         for xyz in nuevas:
             limpio = terreno.quitar_propio(xyz, x, y, z, yaw, self.suelo)
             limpio = terreno.corregir_cerca(limpio, x, y, yaw, self.cfg["sesgo_cerca"])
+            # (reflejos del piso brillante: el limpiador ya los quita; esto cubre lo que se le escape)
+            limpio = terreno.quitar_reflejos(limpio, self.suelo if self.suelo is not None else z - terreno.ALTURA_BASE,
+                                             self.hist_alto)
             self.memoria.sumar(limpio, x, y, ahora)
             limpios.append(limpio)
         if not nuevas:
@@ -149,7 +155,12 @@ class Escaleras(Node):
             alrededor = not en_escalera and ahora - self.t_alrededor > 1.0
             if alrededor:
                 self.t_alrededor = ahora
-            self.detector.actualizar(local, (x, y, z, yaw), self.suelo, ahora, alrededor=alrededor, crudos=limpios)
+            # rumbo fino de la escalera: siempre en la maniobra; si no, 2 veces por segundo (go2 escaleras)
+            fino = self.maniobra.activa or self.espera is not None or ahora - self.t_fino > 0.5
+            if fino:
+                self.t_fino = ahora
+            self.detector.actualizar(local, (x, y, z, yaw), self.suelo, ahora, alrededor=alrededor, crudos=limpios,
+                                     fino=fino)
 
         if self.espera is not None:
             self.acercarse(ahora)

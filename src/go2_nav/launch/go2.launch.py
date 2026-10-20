@@ -91,6 +91,8 @@ def generate_launch_description():
     nav2 = os.path.join(share, "config", "nav2.yaml")
     bt = os.path.join(share, "config", "ruta_comprometida.xml")
     rviz_cfg = os.path.join(share, "rviz", "go2.rviz")
+    with open(os.path.join(share, "urdf", "go2.urdf")) as f:
+        urdf = f.read()
 
     sim = LaunchConfiguration("sim")
     rviz = LaunchConfiguration("rviz")
@@ -125,6 +127,9 @@ def generate_launch_description():
         # punto detras de un marco de puerta "atravesaba" el marco y lo borraba
         Node(package="tf2_ros", executable="static_transform_publisher", name="tf_lidar",
              arguments=["--x", "0.29", "--frame-id", "base_link", "--child-frame-id", "lidar"]),
+        # el CUERPO del perro en RViz (modelo de Unitree; las patas se mueven con /joint_states del driver)
+        Node(package="robot_state_publisher", executable="robot_state_publisher", name="go2_modelo",
+             parameters=[{"robot_description": urdf}]),
         Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen"),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen"),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):

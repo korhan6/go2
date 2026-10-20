@@ -173,7 +173,7 @@ local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 10.0
-      publish_frequency: 2.0
+      publish_frequency: 5.0           # RViz ve el costmap local 5 veces por segundo (antes 2: se veia atrasado)
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
@@ -192,7 +192,11 @@ local_costmap:
         enabled: True
         footprint_clearing_enabled: True
         combination_method: 1
-        observation_sources: obstaculos
+        # suelo_libre: el SUELO que ve el lidar BORRA lo que hubiera marcado ahi (rayos del L1 a cada
+        # punto de suelo). Antes solo borraban los rayos a los obstaculos: con el L1 ralo, una marca
+        # falsa en medio del piso no la cruzaba ningun rayo y quedaba para siempre (el mapa de costos
+        # se llenaba de puntitos y su inflado: "como si no hubiese espacio")
+        observation_sources: obstaculos suelo_libre
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
@@ -208,6 +212,18 @@ local_costmap:
           observation_persistence: 0.0
           expected_update_rate: 0.0
           inf_is_valid: False
+        suelo_libre:
+          topic: /go2/suelo
+          data_type: "PointCloud2"
+          sensor_frame: lidar
+          marking: False
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
       inflation_layer:
         # inflado corto y que cae rapido: prefiere ir por el centro, pero CABE donde cabe el cuerpo
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -220,6 +236,8 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # (el global es grande, 40 x 40 m: mas seguido carga la CPU y con la laptop ocupada el
+      # planificador se quedaba esperando "Costmap timed out waiting for update")
       update_frequency: 2.0
       publish_frequency: 1.0
       global_frame: map
@@ -249,7 +267,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         footprint_clearing_enabled: True
-        observation_sources: obstaculos
+        observation_sources: obstaculos suelo_libre       # (suelo_libre: ver el costmap local)
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
@@ -259,6 +277,15 @@ global_costmap:
           min_obstacle_height: -10.0
           max_obstacle_height: 10.0
           obstacle_max_range: 3.0
+          raytrace_max_range: 3.5
+        suelo_libre:
+          topic: /go2/suelo
+          data_type: "PointCloud2"
+          sensor_frame: lidar
+          marking: False
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
           raytrace_max_range: 3.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

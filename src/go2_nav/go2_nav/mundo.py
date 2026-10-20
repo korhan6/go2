@@ -23,7 +23,13 @@ class Mundo(object):
         self.W, self.H = int(ancho / RES), int(alto / RES)
         self.suelo = np.zeros((self.H, self.W), np.float32)    # altura del piso
         self.pared = np.zeros((self.H, self.W), bool)
+        self.mesas = []
         self.borde()
+
+    def mesa(self, x0, y0, x1, y1, z=0.72):
+        """Tablero de una mesa (superficie colgada a z m, con aire debajo): el lidar ve su cara de
+        abajo. El mapa de alturas no puede tener nada colgado, asi que va aparte."""
+        self.mesas.append((min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1), z))
 
     def borde(self):
         self.pared[:2, :] = self.pared[-2:, :] = True
@@ -141,7 +147,7 @@ def cuarto_simple():
 
 class RobotSim(Robot):
     def __init__(self, mundo, x=1.5, y=1.5, yaw=0.3, tiempo_real=False, deriva=0.0, odom_origen=None,
-                 ruido_real=False, l1_real=False):
+                 ruido_real=False, l1_real=False, piso_brillante=False):
         self.m = mundo
         mundo.preparar()
         self.x, self.y, self.yaw = x, y, yaw
@@ -170,6 +176,9 @@ class RobotSim(Robot):
         # suelo), boca abajo e inclinado 15 grados: delante ve hasta 15 grados por encima del horizonte,
         # detras del hocico no ve (el cuerpo lo tapa) y una huella mas alta que el no la ve (solo su cara)
         self.l1_real = l1_real
+        # piso de ceramica brillante (como la casa, foto del 20-oct): de lejos (rasante) el piso casi
+        # no devuelve, y todo lo que hay arriba se ve ESPEJADO debajo del piso (mismo x, y)
+        self.piso_brillante = piso_brillante
         self._marcadas = None
 
     # ---- tiempo
@@ -382,6 +391,10 @@ class RobotSim(Robot):
             dx, dz = dx * math.cos(a) + dz * math.sin(a), -dx * math.sin(a) + dz * math.cos(a)
             ok = (dz <= 0.27 * dx) & ~((dx < 0.05) & (np.abs(dy) < 0.30))
             xyz = xyz[ok]
+        if self.m.mesas:
+            xyz = np.concatenate([xyz, self._mesas(sx, sy, sz)]).astype(np.float32)
+        if self.piso_brillante and len(xyz):
+            xyz = self._brillo(xyz, sx, sy, sz)
         xyz += self.rng.normal(0, 0.01, xyz.shape).astype(np.float32)
         if self.ruido_real:
             xyz = np.concatenate([xyz, self._ruido_real(xyz)]).astype(np.float32)
@@ -393,6 +406,42 @@ class RobotSim(Robot):
         x, y = self._a_odom(xyz[:, 0], xyz[:, 1])
         xyz[:, 0], xyz[:, 1] = x, y
         return xyz
+
+    def _mesas(self, sx, sy, sz):
+        """Cara de abajo de los tableros visibles (dentro del campo de vision del L1, sin oclusion)."""
+        out = []
+        for x0, y0, x1, y1, z in self.m.mesas:
+            gx, gy = np.meshgrid(np.arange(x0, x1, 0.04), np.arange(y0, y1, 0.04))
+            p = np.c_[gx.ravel(), gy.ravel(), np.full(gx.size, z + self.m.altura(x0, y0))]
+            out.append(p)
+        p = np.concatenate(out) if out else np.zeros((0, 3))
+        if self.l1_real and len(p):
+            c, s = math.cos(self.yaw), math.sin(self.yaw)
+            dx = c * (p[:, 0] - sx) + s * (p[:, 1] - sy)
+            p = p[(p[:, 2] - sz <= 0.27 * dx) & (dx > 0.05)]
+        return p
+
+    def _brillo(self, xyz, sx, sy, sz):
+        """Piso brillante: el suelo (al nivel del perro) devuelve cada vez menos con la distancia
+        (casi nada pasado 1.6 m) y lo que hay arriba aparece espejado abajo, si el rayo rebota en
+        un pedazo de ese mismo piso."""
+        g = self.m.altura(self.x, self.y)
+        r = np.hypot(xyz[:, 0] - sx, xyz[:, 1] - sy)
+        h = xyz[:, 2] - g
+        suelo = np.abs(h) < 0.03
+        p_ve = np.clip(1.0 - (r - 0.8) / 0.8, 0.05, 1.0)
+        queda = ~suelo | (self.rng.random(len(xyz)) < p_ve)
+        arriba = (h > 0.03) & (self.rng.random(len(xyz)) < 0.6)
+        esp = xyz[arriba].copy()
+        hs = sz - g
+        t = hs / np.maximum(hs + (esp[:, 2] - g), 1e-3)                # donde rebota el rayo en el piso
+        rx, ry = sx + t * (esp[:, 0] - sx), sy + t * (esp[:, 1] - sy)
+        ri = np.clip((ry / RES).astype(int), 0, self.m.H - 1)
+        rj = np.clip((rx / RES).astype(int), 0, self.m.W - 1)
+        en_piso = (np.abs(self.m.suelo[ri, rj] - g) < 0.02) & ~self.m.pared[ri, rj]
+        esp = esp[en_piso]
+        esp[:, 2] = g - (esp[:, 2] - g)
+        return np.concatenate([xyz[queda], esp])
 
     def _ruido_real(self, xyz):
         """Lo que el L1 real devuelve ademas del mundo:

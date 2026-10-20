@@ -32,6 +32,7 @@ from rclpy.node import Node
 from std_msgs.msg import Header
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool, Float32, String
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -50,6 +51,8 @@ API_FREEWALK = 2045
 API_BODYHEIGHT = 1013          # altura del cuerpo RELATIVA a la normal, {"data": m}, de -0.18 a +0.03
 ALTURA_MIN, ALTURA_MAX = -0.18, 0.03
 EVITA_SET, EVITA_GET = 1001, 1002          # servicio "obstacles_avoid" de Unitree
+# orden de los motores del Go2 en LowState.motor_state (unitree_sdk2) = nombres del urdf/go2.urdf
+JUNTAS = ["%s_%s_joint" % (pata, j) for pata in ("FR", "FL", "RR", "RL") for j in ("hip", "thigh", "calf")]
 
 
 class Driver(Node):
@@ -92,6 +95,8 @@ class Driver(Node):
 
         self.tf = TransformBroadcaster(self)
         self.pub_odom = self.create_publisher(Odometry, "odom", 10)
+        self.pub_patas = self.create_publisher(JointState, "joint_states", 10)
+        self.t_patas = 0.0
         self.pub_req = self.create_publisher(Request, "/api/sport/request", 10)
         self.pub_bat = self.create_publisher(Float32, "/go2/bateria", 1)
         self.pub_rem = self.create_publisher(Bool, "/go2/control_remoto", 1)
@@ -148,6 +153,7 @@ class Driver(Node):
         self.subidas = 0
         self.create_timer(0.05, self.lazo)          # 20 Hz
         self.create_timer(1.0, self.diag)
+        self.create_timer(0.5, self.patas_de_pie)
         self.create_timer(2.0, self.prender_lidar)
         self.create_timer(3.0, self.revisar_evitacion)
         self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odom con hora local")
@@ -180,6 +186,11 @@ class Driver(Node):
 
     def cb_low(self, m):
         self.soc = int(m.bms_state.soc)
+        # angulos de los 12 motores -> /joint_states: el modelo del perro en RViz mueve las patas
+        q = [float(m.motor_state[i].q) for i in range(12)]
+        if any(abs(v) > 1e-3 for v in q) and time.monotonic() - self.t_patas > 0.05:
+            self.t_patas = time.monotonic()
+            self.publicar_patas(q)
         try:
             wr = bytes(bytearray(m.wireless_remote))
             lx, rx, ry, _l2, ly = struct.unpack_from("<5f", wr, 4)
@@ -187,6 +198,17 @@ class Driver(Node):
                 self.t_remoto = time.monotonic()
         except Exception:
             pass
+
+    def publicar_patas(self, q):
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name, js.position = list(JUNTAS), list(q)
+        self.pub_patas.publish(js)
+
+    def patas_de_pie(self):
+        """Sin angulos de los motores (simulador, o todavia no llegan): el perro de pie."""
+        if time.monotonic() - self.t_patas > 1.0:
+            self.publicar_patas([0.0, 0.8, -1.5] * 4)
 
     def cb_cmd(self, m):
         self.cmd = (m.linear.x, m.linear.y, m.angular.z)

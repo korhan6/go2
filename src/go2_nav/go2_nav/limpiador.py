@@ -38,7 +38,7 @@ from std_srvs.srv import Trigger
 
 from .nube import a_cuerpo, crear_nube, leer_xyz, voxel_unico, yaw_de_quat
 from .nucleo.voxeles import VoxelesRecientes
-from .nucleo.terreno import ANCHO2, LARGO2, caidas_rejilla, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
+from .nucleo.terreno import ANCHO2, LARGO2, caidas_rejilla, quitar_reflejos, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
 
 
 # ---------------------------------------------------------------- mascara aprendida
@@ -184,6 +184,8 @@ class Limpiador(Node):
         self.obst_min = p("obst_min", 0.10).value          # mas bajo se pisa (cables, umbrales)
         self.obst_max = p("obst_max", 0.55).value          # mas alto pasa por debajo
         self.caida_min = p("caida_min", 0.12).value
+        self.caida_r_max = p("caida_r_max", 2.0).value      # m del lidar: mas lejos no se marcan caidas
+        self.sin_reflejos = p("quitar_reflejos", True).value  # piso brillante: quitar lo espejado
         self.altura_base = p("altura_base", 0.33).value     # base_link sobre el suelo (si no se ve)
         self.persistencia = p("persistencia", True).value
         # /scan para el SLAM: hasta 6 m (el L1 de lejos casi no da puntos en la franja de los
@@ -202,6 +204,8 @@ class Limpiador(Node):
         self.pose = None            # (x, y, z, yaw) del perro en odom
         self.suelo = None
         self.hist_caidas = collections.deque(maxlen=6)     # (puntos bajo el suelo, suelo xy) por nube
+        self.hist_alto = collections.deque(maxlen=8)       # celdas con algo arriba del piso (reflejos)
+        self.reflejos = 0
         self.voxeles = VoxelesRecientes(p("voxel_obstaculo", 0.10).value, p("nubes_confirmar", 6).value,
                                         p("nubes_minimas", 2).value)
         self.hist_scan = collections.deque()
@@ -281,6 +285,18 @@ class Limpiador(Node):
             xyz[:, 2] -= np.maximum(0.0, self.sesgo_a - self.sesgo_b * r).astype(np.float32)
         # 2) suelo
         suelo = self.estimar_suelo(xyz, fx, fy, z)
+        # 2b) reflejos del piso brillante: lo que hay arriba se ve espejado debajo del piso, en el
+        #     mismo x, y (terreno.quitar_reflejos). Sin esto el piso se llenaba de "caidas" falsas
+        n0 = len(xyz)
+        h0 = xyz[:, 2] - suelo
+        sin_reflejo = (quitar_reflejos(np.c_[xyz[:, :2], h0, np.arange(n0)], 0.0, self.hist_alto)
+                       if self.sin_reflejos else xyz)
+        if len(sin_reflejo) < n0:
+            k = sin_reflejo[:, 3].astype(np.int64)
+            self.reflejos = n0 - len(k)
+            xyz, xyz0, fx, fy = xyz[k], xyz0[k], fx[k], fy[k]
+        else:
+            self.reflejos = 0
         h = xyz[:, 2] - suelo
         # 3) cuerpo propio
         alto_cuerpo = z - suelo
@@ -324,7 +340,7 @@ class Limpiador(Node):
         self.ultimo = self.holguras(obst, virtuales, x, y, yaw)
         self.ultimo.update({"suelo_bajo_cuerpo": round(alto_cuerpo, 3), "puntos": int(len(xyz)),
                             "obstaculos": int(len(obst)), "fantasmas": int(len(fant)),
-                            "caidas": int(len(virtuales) // 4)})
+                            "caidas": int(len(virtuales) // 4), "reflejos": int(self.reflejos)})
 
     def memoria(self, obst, suelo, x, y, yaw):
         """La zona donde salen los fantasmas (pegada al cuerpo) se filtra: ahi el perro no puede
@@ -403,14 +419,21 @@ class Limpiador(Node):
         bajo = cerca & (h < -self.caida_min)
         piso = cerca & (np.abs(h) < 0.06)
         algo = cerca & (h > -0.05) & (h < 1.0)        # suelo (aunque mal medido de cerca) u obstaculos
+        alto = cerca & (h > 0.08) & (h < 1.5)          # algo de verdad arriba del piso
         # alturas absolutas (odom): con otro suelo estimado se recalculan respecto del actual
-        self.hist_caidas.append((xyz[bajo].copy(), xyz[piso, :2].copy(), xyz[algo, :2].copy()))
-        B = np.concatenate([b for b, _, _ in self.hist_caidas])
-        P = np.concatenate([p for _, p, _ in self.hist_caidas])
-        A = np.concatenate([a for _, _, a in self.hist_caidas])
+        self.hist_caidas.append((xyz[bajo].copy(), xyz[piso, :2].copy(), xyz[algo, :2].copy(), xyz[alto, :2].copy()))
+        B = np.concatenate([b for b, _, _, _ in self.hist_caidas])
+        P = np.concatenate([p for _, p, _, _ in self.hist_caidas])
+        A = np.concatenate([a for _, _, a, _ in self.hist_caidas])
+        AL = np.concatenate([al for _, _, _, al in self.hist_caidas])
         hb = B[:, 2] - suelo
         B = B[hb < -self.caida_min]
-        celdas = caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], P, x, y, R=R, algo=A)
+        # piso brillante (ver terreno.caidas_rejilla): nunca debajo de algo (eso es su reflejo), con la
+        # sombra de un borde de verdad entre el perro y la caida, y delante o al costado del lidar
+        z, yaw = self.pose[2], self.pose[3]
+        lid = (x + self.lidar_fx * math.cos(yaw), y + self.lidar_fx * math.sin(yaw))
+        celdas = caidas_rejilla(np.c_[B[:, :2], B[:, 2] - suelo], P, x, y, R=R, algo=A, alto=AL,
+                                centro=lid, r_max=self.caida_r_max, h_lidar=max(0.15, z - suelo - 0.047), yaw=yaw)
         if len(celdas) == 0:
             return np.zeros((0, 3), np.float32)
         out = [np.c_[celdas[:, 0] + dx, celdas[:, 1] + dy, np.full(len(celdas), suelo + 0.25)]

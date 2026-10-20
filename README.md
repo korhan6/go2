@@ -10,7 +10,7 @@ es de milisegundos.
 | Pieza | De dónde sale | Qué hace |
 |---|---|---|
 | `go2_driver` | propio (mensajes de [unitree_ros2](https://github.com/unitreerobotics/unitree_ros2)) | `/cmd_vel` → `Move` del perro a 20 Hz desde su propio timer; si nadie manda órdenes en 0.4 s, el perro se detiene; odometría y TF con la hora de la laptop (el reloj del perro está corrido horas); el control remoto siempre manda |
-| `go2_limpiador` | propio, con lo medido en TU perro | nube limpia: quita el cuerpo, **corrige el error de altura del L1 de cerca**, quita puntos fantasma (calibración al explorar + aprendizaje solo mientras camina) y ruido suelto, recuerda los obstáculos reales que quedan pegados al cuerpo, marca caídas/escaleras como obstáculo. Publica lo eliminado en `/go2/fantasmas` (rojo en RViz) |
+| `go2_limpiador` | propio, con lo medido en TU perro | nube limpia: quita el cuerpo, **corrige el error de altura del L1 de cerca**, quita puntos fantasma (calibración al explorar + aprendizaje solo mientras camina), **los reflejos del piso brillante** y ruido suelto, recuerda los obstáculos reales que quedan pegados al cuerpo, marca caídas/escaleras como obstáculo. Publica lo eliminado en `/go2/fantasmas` (rojo en RViz) |
 | SLAM | [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) | el mapa (`/map`) |
 | Navegación | [Nav2](https://github.com/ros-navigation/navigation2) | planificador A* + controlador **MPPI omnidireccional** (camina de lado y retrocede) con la **huella exacta** del perro |
 | Ruta comprometida | árbol de comportamiento oficial de Nav2 *"replanning only if path becomes invalid"* | calcula la ruta y la sigue hasta el final; solo replanifica si queda bloqueada |
@@ -115,6 +115,34 @@ go2 ir B
 Mientras lo manejas, el mapa se arma solo (en RViz: gris = sin ver, transparente = suelo visto,
 morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 
+### Qué muestra RViz
+- **El perro de verdad** (modelo 3D de Unitree) en vez de la caja: las patas se mueven con los
+  ángulos reales de los motores. La caja (la huella de Nav2) y la zona de frenado siguen en la
+  lista de RViz, apagadas: prende "Huella del perro" si quieres verla. (Mallas y medidas:
+  `unitreerobotics/unitree_ros`, licencia BSD-3, reducidas a 1.2 MB en `go2_nav/meshes`. Si no
+  aparece el perro: `sudo apt install ros-jazzy-robot-state-publisher`.)
+- **Costos locales** (alrededor del perro, 5 veces por segundo; antes 2 y se veía atrasado):
+  celeste = el centro del perro no puede estar ahí, rojo/azul = más caro cuanto más cerca de algo.
+- **Costos globales** viene apagado (es por donde planifica la ruta). Prende "Costos globales" para verlo.
+- Los fantasmas ya quitados (puntos rojos en la cabeza) vienen apagados.
+
+## Piso brillante (cerámica): el piso es un espejo
+El L1 ve en el piso brillante **todo lo que hay arriba, repetido debajo del piso** (la mesa, la
+puerta, las paredes), justo en el mismo lugar. Y lejos, con el rayo rasante, el piso casi no
+devuelve. Antes eso se tomaba como "caídas", el mapa de costos se llenaba de puntitos y de su
+inflado, y RViz mostraba al perro **"como si no hubiese espacio"** (salvo por donde ya había
+pasado). Ahora:
+- **Se quitan los reflejos:** un punto debajo del piso donde hay algo arriba es su reflejo (debajo
+  de una escalera de verdad hay aire). `go2 ver` dice cuántos quitó ("reflejos").
+- **Una caída tiene que tener la sombra de un borde de verdad** entre el perro y ella (el reflejo
+  del tablero de una mesa, que el lidar no ve directo, no la tiene: entre el perro y la mesa se ve
+  piso), y estar delante o al costado (atrás el cuerpo tapa).
+- **El suelo que se ve BORRA** lo que estaba marcado ahí en los mapas de costos. Antes solo borraban
+  los rayos a los obstáculos y una marca falsa en medio del piso quedaba para siempre.
+- Medido con el simulador de piso brillante (`pruebas/prueba_brillo.py`): mapa de costos local con
+  57 celdas de obstáculo falsas → 0. Y el borde de una escalera de verdad se sigue marcando en su
+  lugar (±4 cm).
+
 ## Fantasmas: se corrigen solos
 - **Cada `go2 explorar`** empieza con 2 vueltas en el sitio (~15 s) para aprender los puntos
   fantasma de ese momento. Si algo REAL está tan cerca que lo tocaría al girar, corta el giro.
@@ -161,6 +189,7 @@ morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 | `guardar A` → explorar → `ir A` | llega a 3 cm de A |
 | `calibrar` con fantasmas pegados al cuerpo | adelante 0.17 → 3.06 m; luego explora normal |
 | Tu grabación real (18-oct) por el limpiador | lados limpios, 0 caídas falsas con 19 % de reflejos, 3 ms por nube |
+| **Piso brillante** con una mesa delante, girando 20 s (`prueba_brillo.py`, con Nav2) | celdas de obstáculo falsas en el mapa de costos local: 57 → 0; caídas y escaleras de bajada falsas: 0 |
 
 ## Visión por computadora (cámara + YOLO en la GPU)
 

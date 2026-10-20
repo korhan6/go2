@@ -60,8 +60,8 @@ def correr(orden_esc, inicio=None):
         esperar(180, lambda: (esc.get("resultado") or {}).get("ok") is not None and not esc.get("activa"))
         esperar(3)
         res = esc.get("resultado") or {}
-        print("FINAL %s: ok=%s | %s | z=%s | choques=%s" % (orden_esc, res.get("ok"), res.get("motivo"), ver.get("z"),
-                                                           ver.get("choques")), flush=True)
+        print("FINAL %s: ok=%s | %s | z=%s | choques=%s %s" % (orden_esc, res.get("ok"), res.get("motivo"), ver.get("z"),
+                                                              ver.get("choques"), ver.get("donde") or ""), flush=True)
         return bool(res.get("ok")) and not ver.get("choques")
     finally:
         os.killpg(os.getpgid(lanz.pid), signal.SIGINT)

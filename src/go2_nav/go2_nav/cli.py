@@ -478,7 +478,8 @@ def linea(e):
                f(L.get("adelante")), f(L.get("izq")), f(L.get("der")), f(L.get("atras")),
                f(L.get("nubes_hz")), f(L.get("ms_max")), f(D.get("odom_hz")), f(D.get("move_hz")),
                ",".join("%.2f" % v for v in (D.get("orden") or [])) or "-",
-               "%s (aprendidos %s)" % (f(L.get("fantasmas")), f(L.get("fantasmas_aprendidos"))), avisos(L, D), cam(e),
+               "%s (aprendidos %s) reflejos=%s" % (f(L.get("fantasmas")), f(L.get("fantasmas_aprendidos")),
+                                                   f(L.get("reflejos"))), avisos(L, D), cam(e),
                e.get("motivo", "") + (("  [" + L["calibracion"] + "]") if L.get("calibracion") else "")
                + escalera_delante(e)))
 

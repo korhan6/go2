@@ -60,6 +60,17 @@ def elegir(nombre):
         return mundo_dos_puertas()
     if nombre == "simple":
         return M.cuarto_simple(), (1.5, 1.5, 0.3)
+    if nombre == "brillante":
+        # como la foto del 20-oct: piso de ceramica brillante, una mesa delante, la puerta al costado
+        m = M.Mundo(8.0, 6.0)
+        m.mesa(3.0, 2.2, 4.2, 3.0, 0.72)
+        for px, py in ((3.05, 2.25), (4.11, 2.25), (3.05, 2.91), (4.11, 2.91)):
+            m.rect_pared(px, py, px + 0.04, py + 0.04)                 # patas de la mesa
+        m.rect_pared(5.5, 0.0, 5.6, 6.0)                               # pared de enfrente
+        m.rect_pared(0.0, 4.2, 5.5, 4.3)                               # pared con la puerta
+        m.rect_libre(1.8, 4.2, 2.6, 4.3)                               # la puerta (80 cm)
+        m.rect_pared(1.75, 3.5, 1.8, 4.2)                              # la hoja abierta
+        return m, (1.2, 2.6, 0.0)
     if nombre == "escalera":
         # la escalera angosta de la casa: el perro abajo, con el hocico a 13 cm del primer escalon
         # (y una pared 90 cm detras del pie de la escalera, para ver que la bajada para a tiempo)
@@ -83,7 +94,8 @@ class PerroSim(Node):
         if inicio:
             x, y, yaw = [float(v) for v in inicio.split(",")]
         # en la escalera, el lidar como el L1 de verdad (mas bajo, no ve atras ni huellas mas altas que el)
-        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido, l1_real=(nombre == "escalera"))
+        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido, l1_real=nombre in ("escalera", "brillante"),
+                            piso_brillante=(nombre == "brillante"))
         self.r.fantasmas = bool(fantasmas)
         self.t0 = time.monotonic()
         sd = qos_profile_sensor_data

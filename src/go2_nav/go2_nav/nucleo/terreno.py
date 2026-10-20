@@ -79,6 +79,35 @@ def corregir_cerca(xyz, x, y, yaw, sesgo):
 
 
 
+REFLEJO_CELDA = 0.10   # m: celda donde se busca el objeto de verdad encima de un punto "bajo el piso"
+
+
+def quitar_reflejos(xyz, suelo, hist_alto=None, celda=REFLEJO_CELDA):
+    """Quita los REFLEJOS del piso brillante: el piso es un espejo y el L1 ve todo lo que hay arriba
+    repetido debajo del piso, en el MISMO x, y (la mesa, la puerta, las paredes). Debajo de una
+    caida de verdad (escalera) no hay nada encima: es aire. Asi que un punto bajo el piso en una
+    celda donde hay algo arriba del piso (ahora o en las ultimas nubes) es un reflejo.
+    Sin esto el piso de ceramica se llenaba de "caidas" (obstaculos falsos en el mapa de costos:
+    "como si no hubiese espacio") y hasta de escaleras de bajada que no existen.
+
+    hist_alto: deque (de la pasada anterior) con las celdas con algo arriba de las ultimas nubes;
+    se actualiza con esta nube. Devuelve la nube sin los reflejos."""
+    if len(xyz) == 0:
+        return xyz
+    h = xyz[:, 2] - suelo
+    k = np.floor(xyz[:, :2] / celda).astype(np.int64)
+    clave = (k[:, 0] << 32) + (k[:, 1] & 0xFFFFFFFF)
+    arriba = np.unique(clave[(h > 0.08) & (h < 2.0)])
+    if hist_alto is not None:
+        hist_alto.append(arriba)
+        arriba = np.unique(np.concatenate(list(hist_alto)))
+    bajo = h < -0.08
+    if not bajo.any() or not len(arriba):
+        return xyz
+    reflejo = bajo & np.isin(clave, arriba)
+    return xyz[~reflejo] if reflejo.any() else xyz
+
+
 def a_cuerpo(xyz, x, y, yaw):
     """Puntos (odom) -> coordenadas del perro (fx adelante, fy izquierda)."""
     c, s = math.cos(yaw), math.sin(yaw)
@@ -656,7 +685,8 @@ def _rellenar_huecos(rangos, hueco_max):
 
 
 # ---------------------------------------------------------------- caidas para el mapa de costos
-def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, cerca_cuerpo=0.60, algo=None):
+def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, cerca_cuerpo=0.60, algo=None,
+                   alto=None, centro=None, r_max=None, h_lidar=None, yaw=None):
     """Celdas de CAIDA (escalon hacia abajo, hueco) alrededor del perro, para marcarlas como
     obstaculo en el mapa de costos.
 
@@ -673,6 +703,13 @@ def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, c
     caida, hasta encontrar algo. Nunca a menos de cerca_cuerpo m del centro del perro (0.60 =
     24 cm del hocico): antes llegaba a 9 cm, y con el suelo de cerca medido unos cm alto (no
     "suelo") la marca quedaba pegada al hocico y frenaba todo ("algo delante a 3 cm").
+    alto  Kx2 (x, y) puntos ARRIBA del suelo (> 8 cm): una celda con algo arriba no es caida (lo de
+          abajo es el reflejo de eso en el piso brillante: ver quitar_reflejos)
+    centro, r_max: solo cuentan las celdas a menos de r_max m de centro (el lidar).
+    h_lidar: altura del lidar sobre el piso: con centro, exige la sombra de un borde de verdad entre
+          el perro y la caida (ver abajo).
+    yaw:  rumbo del perro: con centro, una caida NUEVA solo delante o al costado del lidar (atras el
+          cuerpo tapa: lo poco que llega de ahi son reflejos de paredes que el lidar no ve directo).
     Devuelve Kx2 centros de celda (odom).
     """
     n = int(round(2 * R / C))
@@ -702,6 +739,43 @@ def caidas_rejilla(bajo, piso, x, y, R=2.5, C=0.10, min_pts=4, sombra_max=0.7, c
     with np.errstate(invalid="ignore", divide="ignore"):
         var = s2 / np.maximum(cnt, 1) - (s1 / np.maximum(cnt, 1)) ** 2
     caida = ((cnt >= min_pts) & (var < 0.03 ** 2)).reshape(n, n) & ~hay_suelo
+    if alto is not None and len(alto):
+        i, j, ok = idx(alto[:, 0], alto[:, 1])
+        hay_alto = np.zeros((n, n), bool)
+        hay_alto[i[ok], j[ok]] = True
+        caida &= ~hay_alto
+    if r_max is not None and centro is not None:
+        ci = (np.arange(n) + 0.5) * C - R + x - centro[0]
+        cj = (np.arange(n) + 0.5) * C - R + y - centro[1]
+        caida &= (ci[:, None] ** 2 + cj[None, :] ** 2) <= r_max ** 2
+    if yaw is not None and centro is not None:
+        ci = (np.arange(n) + 0.5) * C - R + x - centro[0]
+        cj = (np.arange(n) + 0.5) * C - R + y - centro[1]
+        frente = ci[:, None] * math.cos(yaw) + cj[None, :] * math.sin(yaw)
+        caida &= frente > -0.2 * np.hypot(ci[:, None], cj[None, :])
+    if centro is not None and h_lidar and caida.any():
+        # GEOMETRIA de la sombra: una superficie d m bajo el piso, vista a r m del lidar (a h_lidar m
+        # de altura), pide un borde a e = r / (1 + d / h_lidar) y SIN suelo entre e y r (es la sombra
+        # del borde). Una escalera de verdad cumple; el reflejo de algo que el lidar no ve directo
+        # (el tablero de una mesa espejado en el piso brillante) no: entre el perro y la mesa se ve piso
+        ii, jj = np.nonzero(caida)
+        k = ii * n + jj
+        prof = -(s1[k] / np.maximum(cnt[k], 1))
+        vx = (ii + 0.5) * C - R + x - centro[0]
+        vy = (jj + 0.5) * C - R + y - centro[1]
+        r = np.hypot(vx, vy)
+        e = r / (1.0 + prof / h_lidar)
+        ux, uy = vx / np.maximum(r, 1e-6), vy / np.maximum(r, 1e-6)
+        mal = np.zeros(len(ii), bool)
+        for t in np.arange(0.0, 2.5, C / 2):
+            dd = e + 0.10 + t
+            vivo = dd < r - C
+            if not vivo.any():
+                break
+            a = np.floor((centro[0] + ux * dd - x + R) / C).astype(np.int64).clip(0, n - 1)
+            b = np.floor((centro[1] + uy * dd - y + R) / C).astype(np.int64).clip(0, n - 1)
+            mal |= vivo & hay_suelo[a, b]
+        caida[ii[mal], jj[mal]] = False
     if not caida.any():
         return vacio
     # sombra del borde: de cada celda de caida hacia el perro, mientras no haya suelo

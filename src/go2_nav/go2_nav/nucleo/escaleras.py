@@ -27,6 +27,8 @@ from .control import ang
 
 CONFIRMAR_N, CONFIRMAR_T = 3, 4.0        # detecciones seguidas (en 4 s) para confirmar
 T_CRUDOS = 1.0                           # s de nubes crudas para el rumbo fino de la escalera
+BAJADA_LEJOS = 1.6                       # m (centro del perro al borde): mas lejos una bajada no cuenta
+BAJADA_ANCHO_MIN = 0.36                  # m: mas angosta no es escalera (el cuerpo mide 0.31)
 # tolerancias entre vistas: una POSIBLE bajada se ve de lejos y su borde "camina" a lo largo
 # mientras el perro se mueve (se ve otro pedazo), asi que su tolerancia es mas ancha
 TOL = {"bajar": (0.15, math.radians(10)), "subir": (0.15, math.radians(10)),
@@ -111,15 +113,16 @@ class Detector(object):
         self.hist = {k: [] for k in self.hist}
         self.crudos, self.orient = [], None
 
-    def actualizar(self, xyz, pose, suelo, ahora, alrededor=False, crudos=None):
+    def actualizar(self, xyz, pose, suelo, ahora, alrededor=False, crudos=None, fino=True):
         """pose = (x, y, z, yaw). crudos: las nubes nuevas SIN voxelizar (para el rumbo fino de la
-        escalera: ver terreno.orientacion_escalera)."""
+        escalera: ver terreno.orientacion_escalera). fino=False: no calcularlo esta vez (es lo mas
+        pesado; fuera de la escalera alcanza con 2 veces por segundo)."""
         x, y, z, yaw = pose
         if crudos:
             self.crudos.extend((ahora, c) for c in crudos if len(c))
         while self.crudos and ahora - self.crudos[0][0] > T_CRUDOS:
             self.crudos.pop(0)
-        if self.crudos:
+        if self.crudos and fino:
             o = terreno.orientacion_escalera(np.concatenate([c for _t, c in self.crudos]), x, y, yaw, suelo)
             if o is not None:
                 o["t"] = ahora
@@ -142,10 +145,11 @@ class Detector(object):
                 self.alto_cuerpo = z - suelo
             elif d == math.pi:
                 self.atras = (det if escalera else None, centro, ahora)
-            if escalera and det["dist"] < 2.0:
+            # una bajada cuenta hasta BAJADA_LEJOS m (mas lejos, con piso brillante, el piso rasante no
+            # devuelve y lo que se ve "abajo" es el reflejo de algo que el lidar no ve directo: el
+            # tablero de una mesa) y si es al menos tan ancha como un perro (un reflejo es angosto)
+            if escalera and det["dist"] < BAJADA_LEJOS and det["ancho"] >= BAJADA_ANCHO_MIN:
                 self._sumar("bajar", det, x, y, yd, suelo, ahora)
-            elif det is not None and det["dist"] < 2.2:
-                self._sumar("posible", det, x, y, yd, suelo, ahora)
             sub = terreno.analizar_subida(fx, fy, h)
             if d == 0.0:
                 self.motivo_subida = ("escalera de SUBIDA a %.2f m (ancho %.2f m)" % (sub["dist"], sub["ancho"])
