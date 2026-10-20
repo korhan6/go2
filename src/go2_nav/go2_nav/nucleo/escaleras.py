@@ -299,8 +299,9 @@ class Maniobra(object):
         conf = c["det"].confirmada(self.m["tipo"], c["ahora"], c["P"])
         if conf is None:
             self.abortar("perdi de vista la escalera", c["ahora"])
-        elif conf["ancho"] < self.cfg["ancho_min_escalera"] and not conf["abierta"]:
-            self.abortar("escalera muy angosta (%.2f m)" % conf["ancho"], c["ahora"])
+        elif conf["ancho"] + terreno.RES_ANCHO < self.cfg["ancho_min_escalera"] and not conf["abierta"]:
+            self.abortar("escalera muy angosta (%.2f m; minimo %.2f)" % (conf["ancho"], self.cfg["ancho_min_escalera"]),
+                         c["ahora"])
         else:
             self.m.update(E=conf["E"], yaw_n=conf["yaw_n"])
             self._ir("ALINEAR", c["ahora"])

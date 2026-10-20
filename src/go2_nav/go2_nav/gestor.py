@@ -49,7 +49,11 @@ from go2_nav_interfaces.srv import Comando
 
 from .nube import leer_xyz, quat_de_yaw, yaw_de_quat
 from .nucleo import exploracion as EX
+from .nucleo.config import DEFECTO as _CFG
 from .nucleo.control import ang
+from .nucleo.terreno import RES_ANCHO
+
+ANCHO_MIN = _CFG["ancho_min_escalera"]      # cuerpo + 5 cm por lado (ver nucleo/config.py)
 
 try:
     from slam_toolbox.srv import DeserializePoseGraph, Reset, SaveMap, SerializePoseGraph
@@ -641,7 +645,7 @@ class Gestor(Node):
         with self.lock:
             self.descartadas = [d for d in self.descartadas if ahora - d[3] < T_DESCARTE]
             for v in vistas:
-                if v["ancho"] < 0.45 and not v.get("abierta"):
+                if v["ancho"] + RES_ANCHO < ANCHO_MIN and not v.get("abierta"):
                     continue
                 x, y, yaw = self.odom_a_mapa(T, v["x"], v["y"], v["yaw"])
                 posible = bool(v.get("posible"))

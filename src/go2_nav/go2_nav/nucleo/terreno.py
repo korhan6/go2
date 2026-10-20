@@ -40,7 +40,7 @@ LAT = 0.70
 X0, X1, PASO = 0.15, 2.20, 0.05
 HUECO = 5              # franjas seguidas sin suelo (25 cm) para llamarlo borde
 RAMPA_MAX = 0.40       # m de caida por m de avance: mas suave que esto es rampa, no escalera
-ANCHO_MIN = 0.45       # m: escalera mas angosta que esto no se baja sola
+RES_ANCHO = 0.05       # m: el ancho de una escalera se mide en franjas de 10 cm (+-5 cm)
 
 
 
