@@ -36,6 +36,7 @@ from std_msgs.msg import Bool, String
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
+from . import ajustes
 from .nube import a_cuerpo, crear_nube, leer_xyz, voxel_unico, yaw_de_quat
 from .nucleo.voxeles import VoxelesRecientes
 from .nucleo.terreno import ANCHO2, LARGO2, caidas_rejilla, quitar_reflejos, rangos_scan   # cuerpo: medio largo / medio ancho (0.70 x 0.31 m)
@@ -176,7 +177,7 @@ class FantasmasEnLinea(object):
 class Limpiador(Node):
     def __init__(self):
         super().__init__("go2_limpiador")
-        p = self.declare_parameter
+        p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
         self.topico = p("topico_nube", "/utlidar/cloud_deskewed").value
         self.lidar_fx = p("lidar_fx", 0.30).value
         sesgo = p("sesgo_cerca", [0.14, 0.19]).value

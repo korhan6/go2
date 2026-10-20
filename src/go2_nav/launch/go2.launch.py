@@ -13,7 +13,9 @@ instala instalar.sh), aparte del Python del sistema que usa ROS.
 Cadena de velocidad: controller(MPPI) -> cmd_vel_nav -> velocity_smoother -> cmd_vel_smoothed
                      -> collision_monitor -> cmd_vel -> go2_driver -> Move del perro (20 Hz)
 """
+import functools
 import os
+import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -63,6 +65,25 @@ def _slam(context):
                 launch_arguments={"slam_params_file": tmp, "use_sim_time": "false"}.items())]
 
 
+AJUSTES = os.path.expanduser("~/.go2_nav/ajustes.yaml")
+
+
+@functools.lru_cache(maxsize=None)
+def _ajustes():
+    """Tus ajustes (~/.go2_nav/ajustes.yaml, ver config/ajustes_ejemplo.yaml): van DESPUES de los
+    valores del paquete, asi que los pisan. Ese archivo no se borra al actualizar el codigo.
+    Se revisa antes (go2_nav/ajustes.py): un error de tipeo ahi tiraba TODOS los nodos; ahora lo
+    que no sirve se avisa y se ignora."""
+    import yaml
+    from go2_nav import ajustes
+    from go2_nav.nucleo import config
+    with open(os.path.join(get_package_share_directory("go2_nav"), "config", "nav2.yaml")) as f:
+        paquete = ajustes.nodos(yaml.safe_load(f))[0]
+    paquete["go2_escaleras"] = dict(config.DEFECTO)
+    salida = os.path.join(tempfile.gettempdir(), "go2_nav_ajustes_%d.yaml" % os.getuid())
+    return ajustes.leer(AJUSTES, paquete, salida)
+
+
 def _vision_y_gestor(context):
     sim = LaunchConfiguration("sim").perform(context) == "true"
     vision = LaunchConfiguration("vision").perform(context) == "true"
@@ -74,7 +95,7 @@ def _vision_y_gestor(context):
     acciones.append(Node(package="go2_nav", executable="gestor", name="go2_gestor", output="screen",
                          parameters=[{"escaleras": LaunchConfiguration("escaleras").perform(context),
                                       "escaleras_vision": esc_vision,
-                                      "mapa": LaunchConfiguration("mapa").perform(context).strip()}]))
+                                      "mapa": LaunchConfiguration("mapa").perform(context).strip()}] + _ajustes()[0]))
     if vision and not sim:
         if os.path.exists(VENV_PY):
             acciones.append(ExecuteProcess(
@@ -93,6 +114,7 @@ def generate_launch_description():
     rviz_cfg = os.path.join(share, "rviz", "go2.rviz")
     with open(os.path.join(share, "urdf", "go2.urdf")) as f:
         urdf = f.read()
+    extra, aviso = _ajustes()
 
     sim = LaunchConfiguration("sim")
     rviz = LaunchConfiguration("rviz")
@@ -121,7 +143,8 @@ def generate_launch_description():
                           "inicio": LaunchConfiguration("inicio_sim"),
                           "puntos_por_nube": ParameterValue(LaunchConfiguration("puntos_sim"), value_type=int)}],
              condition=IfCondition(sim)),
-        Node(package="go2_nav", executable="driver", name="go2_driver", output="screen"),
+        LogInfo(msg=aviso or "go2_nav: sin ajustes propios (%s no existe): valores del paquete" % AJUSTES),
+        Node(package="go2_nav", executable="driver", name="go2_driver", output="screen", parameters=extra),
         # donde esta el L1 en el perro (URDF del Go2: 0.29 m adelante del centro, en la cabeza).
         # Los costmaps borran obstaculos con rayos desde el sensor: desde base_link, cada rayo a un
         # punto detras de un marco de puerta "atravesaba" el marco y lo borraba
@@ -130,24 +153,24 @@ def generate_launch_description():
         # el CUERPO del perro en RViz (modelo de Unitree; las patas se mueven con /joint_states del driver)
         Node(package="robot_state_publisher", executable="robot_state_publisher", name="go2_modelo",
              parameters=[{"robot_description": urdf}]),
-        Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen"),
-        Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen"),
+        Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen", parameters=extra),
+        Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen", parameters=extra),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):
         # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE
         OpaqueFunction(function=_slam),
 
         Node(package="nav2_controller", executable="controller_server", output="screen",
-             parameters=[nav2], remappings=remap_vel, respawn=True, respawn_delay=2.0),
+             parameters=[nav2] + extra, remappings=remap_vel, respawn=True, respawn_delay=2.0),
         Node(package="nav2_planner", executable="planner_server", name="planner_server", output="screen",
-             parameters=[nav2], respawn=True, respawn_delay=2.0),
+             parameters=[nav2] + extra, respawn=True, respawn_delay=2.0),
         Node(package="nav2_behaviors", executable="behavior_server", name="behavior_server", output="screen",
-             parameters=[nav2], remappings=remap_vel, respawn=True, respawn_delay=2.0),
+             parameters=[nav2] + extra, remappings=remap_vel, respawn=True, respawn_delay=2.0),
         Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator", output="screen",
-             parameters=[nav2, {"default_nav_to_pose_bt_xml": bt}], respawn=True, respawn_delay=2.0),
+             parameters=[nav2, {"default_nav_to_pose_bt_xml": bt}] + extra, respawn=True, respawn_delay=2.0),
         Node(package="nav2_velocity_smoother", executable="velocity_smoother", name="velocity_smoother",
-             output="screen", parameters=[nav2], remappings=remap_vel, respawn=True, respawn_delay=2.0),
+             output="screen", parameters=[nav2] + extra, remappings=remap_vel, respawn=True, respawn_delay=2.0),
         Node(package="nav2_collision_monitor", executable="collision_monitor", name="collision_monitor",
-             output="screen", parameters=[nav2], respawn=True, respawn_delay=2.0),
+             output="screen", parameters=[nav2] + extra, respawn=True, respawn_delay=2.0),
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager", name="lifecycle_manager_navigation",
              output="screen", parameters=[{"autostart": True, "node_names": nav2_nodos, "bond_timeout": 8.0,
                                       "attempt_respawn_reconnection": True, "bond_respawn_max_duration": 15.0}]),

@@ -493,8 +493,44 @@ def prueba_exploracion():
     print("   OK")
 
 
+def prueba_ajustes():
+    """~/.go2_nav/ajustes.yaml escrito a mano: lo que ROS no puede leer (y tumbaba TODOS los nodos)
+    se avisa y se ignora; 0 donde va 0.0 se convierte; lo bien escrito pasa."""
+    print("== tus ajustes: un error de tipeo no tumba los nodos")
+    from go2_nav import ajustes
+    paquete = {"go2_escaleras": dict(config.DEFECTO),
+               "local_costmap/local_costmap": {"footprint": "[[0.4, 0.1]]", "footprint_padding": 0.07,
+                                               "inflation_layer": {"inflation_radius": 0.55}},
+               "controller_server": {"FollowPath": {"vx_max": 0.6, "batch_size": 2000}}}
+    usuario = {
+        "go2_escaleras": {"ros__parameters": {"radio_giro": 0, "v_bajar": "rapido", "sesgo_cerca": [0, 0.19]}},
+        "go2_limpiador": {"obst_max": 0.5},                                  # falta ros__parameters
+        "local_costmap": {"local_costmap": {"ros__parameters": {
+            "footprint": [[0.4, 0.1], [-0.37, 0.16]],                        # sin comillas
+            "footprint_padding": 0, "inflation_layer": {"inflation_radius": 1}, "foot_padding": 0.1}}},
+        "controller_server": {"ros__parameters": {"FollowPath": {"vx_max": 0.5, "batch_size": 1000.0}}},
+    }
+    limpio, avisos = ajustes.revisar(usuario, paquete)
+    for a in avisos:
+        print("   aviso:", a)
+    e = limpio["go2_escaleras"]["ros__parameters"]
+    assert e == {"radio_giro": 0.0, "sesgo_cerca": [0.0, 0.19]} and isinstance(e["radio_giro"], float)
+    assert "go2_limpiador" not in limpio
+    c = limpio["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert c["footprint"] == "[[0.4, 0.1], [-0.37, 0.16]]" and c["footprint_padding"] == 0.0
+    assert c["inflation_layer"]["inflation_radius"] == 1.0 and c["foot_padding"] == 0.1
+    f = limpio["controller_server"]["ros__parameters"]["FollowPath"]
+    assert f == {"vx_max": 0.5, "batch_size": 1000} and isinstance(f["batch_size"], int)
+    assert any("v_bajar" in a for a in avisos) and any("go2_limpiador" in a for a in avisos)
+    assert any("foot_padding" in a and "mal escrito" in a for a in avisos)
+    assert ajustes.revisar(["no", "es", "un", "dict"], paquete)[0] == {}
+    print("   OK")
+
+
 if __name__ == "__main__":
     que = sys.argv[1] if len(sys.argv) > 1 else "todo"
+    if que in ("todo", "ajustes"):
+        prueba_ajustes()
     if que in ("todo", "deteccion"):
         prueba_deteccion()
     if que in ("todo", "posible"):

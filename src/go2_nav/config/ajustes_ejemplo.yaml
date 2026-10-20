@@ -1,0 +1,53 @@
+# TUS AJUSTES de go2_nav. Copia este archivo a ~/.go2_nav/ajustes.yaml (esa carpeta NO se borra al
+# actualizar el codigo), descomenta (quita el '#') lo que quieras cambiar y relanza 'go2 lanzar'.
+# Lo que no pongas aca usa el valor del paquete. Al arrancar, 'go2 lanzar' dice si los uso.
+#
+#   mkdir -p ~/.go2_nav && cp ~/go2_ws/install/go2_nav/share/go2_nav/config/ajustes_ejemplo.yaml ~/.go2_nav/ajustes.yaml
+#
+# Cuidado con la sangria: son 2 espacios por nivel, como esta abajo. Si algo esta mal escrito no
+# se cae nada: 'go2 lanzar' lo marca con '!!' y para eso usa el valor del paquete.
+
+# --- ESCALERAS (go2_escaleras). Estos tambien se pueden cambiar en vivo:
+#     ros2 param set /go2_escaleras radio_giro 0.32
+# go2_escaleras:
+#   ros__parameters:
+#     radio_giro: 0.35            # m libres desde el centro para girar 180 antes de bajar
+#     v_subir: 0.30               # m/s subiendo
+#     v_bajar: 0.15               # m/s bajando (en reversa)
+#     v_escalera_max: 0.40        # m/s: hasta aca sube la velocidad si el perro no avanza
+#     ancho_min_escalera: 0.41    # m: mas angosta no la toma sola
+
+# --- LIDAR (go2_limpiador)
+# go2_limpiador:
+#   ros__parameters:
+#     obst_min: 0.10              # m sobre el piso: mas bajo se pisa (cables, umbrales)
+#     obst_max: 0.55              # m sobre el piso: mas alto pasa por debajo (mesas)
+#     quitar_reflejos: true       # piso brillante: quitar lo que se ve espejado debajo del piso
+#     caida_r_max: 2.0            # m del lidar: mas lejos no marca caidas
+
+# --- HITBOX de la navegacion (Nav2). La huella es el contorno del perro en metros, desde el
+#     centro: x hacia adelante, y hacia la izquierda.
+# local_costmap:
+#   local_costmap:
+#     ros__parameters:
+#       footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
+#       footprint_padding: 0.07   # margen alrededor de la huella (con menos, roza marcos de puertas)
+# global_costmap:
+#   global_costmap:
+#     ros__parameters:
+#       footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
+
+# --- FRENO DE EMERGENCIA (collision_monitor)
+# collision_monitor:
+#   ros__parameters:
+#     Huella:
+#       time_before_collision: 0.5   # s antes de tocar el cuerpo en que frena
+#     Frente:
+#       slowdown_ratio: 0.7          # velocidad en la zona de 20 cm delante del hocico
+
+# --- VELOCIDADES de la navegacion (controlador MPPI)
+# controller_server:
+#   ros__parameters:
+#     FollowPath:
+#       vx_max: 0.6                 # m/s hacia adelante
+#       wz_max: 1.0                 # rad/s de giro

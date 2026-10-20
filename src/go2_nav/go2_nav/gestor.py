@@ -47,6 +47,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from go2_nav_interfaces.srv import Comando
 
+from . import ajustes
 from .nube import leer_xyz, quat_de_yaw, yaw_de_quat
 from .nucleo import exploracion as EX
 from .nucleo.config import DEFECTO as _CFG
@@ -74,7 +75,7 @@ LIDAR_SOLO_N, LIDAR_SOLO_T = 4, 2.0     # vistas del lidar (en >= 2 s) para dar 
 class Gestor(Node):
     def __init__(self):
         super().__init__("go2_gestor")
-        p = self.declare_parameter
+        p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
         self.volver = p("volver_al_terminar", True).value
         self.frontera_min = p("frontera_min_celdas", 5).value     # 0.5 m de borde (una puerta)
         self.hueco_min = p("hueco_min_m2", 0.5).value

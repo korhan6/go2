@@ -43,6 +43,8 @@ except ImportError:
     CollisionMonitorState = None
 from unitree_go.msg import LowState, SportModeState
 
+from . import ajustes
+
 API_MOVE = 1008
 API_STOPMOVE = 1003
 API_STANDUP = 1004
@@ -58,7 +60,7 @@ JUNTAS = ["%s_%s_joint" % (pata, j) for pata in ("FR", "FL", "RR", "RL") for j i
 class Driver(Node):
     def __init__(self):
         super().__init__("go2_driver")
-        p = self.declare_parameter
+        p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
         self.vx_max = p("vx_max", 0.8).value
         self.vy_max = p("vy_max", 0.4).value
         self.wz_max = p("wz_max", 1.2).value

@@ -288,10 +288,11 @@ go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'f
    cerca NO veo el escalon`** → llegó al borde pero al acercarse no vio la huella (ver 1).
    Una posible bajada tiene 2 intentos y después queda como `(balcon/desnivel)`.
 5. **`el perro no avanza en la escalera`** → la marcha FreeWalk no se puso o el perro no camina
-   a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2`.
+   a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2` (en vivo; para
+   dejarlo, ponlo en `~/.go2_nav/ajustes.yaml`, ver [Tus ajustes](#dónde-está-cada-valor-y-cómo-cambiarlo)).
 6. **`no hay espacio para girar junto a la escalera (X cm libres, hacen falta 35)`** → ya se corrió
    hasta 30 cm buscando lugar y no lo encontró: pasillos de menos de ~75 cm no. Si tu perro sí cabe,
-   `ros2 param set /go2_escaleras radio_giro 0.32`.
+   `ros2 param set /go2_escaleras radio_giro 0.32` (en vivo; para dejarlo, en `~/.go2_nav/ajustes.yaml`).
 
 ### Si el perro no avanza (pisa en el sitio)
 El Go2 casi no camina por debajo de ~0.20 m/s. Si avanza menos del 40 % de lo que se le pide, la
@@ -345,6 +346,53 @@ limpiador consumen ~1–2 núcleos. Si la CPU va justa:
 - `go2 lanzar vision:=false` quita la cámara (la visión ya corre con `nice 10`, detrás de Nav2);
 - en `nav2.yaml` baja `batch_size` (1500 → 1000) y `time_steps` (56 → 40) del MPPI, y
   `update_frequency` del costmap local (10 → 5).
+
+## Dónde está cada valor y cómo cambiarlo
+**Las carpetas en la laptop:**
+
+| Carpeta | Qué hay | ¿Se borra al actualizar? |
+|---|---|---|
+| `~/go2_repo` | la copia de GitHub (de acá se copia el código) | **sí**, se baja de nuevo |
+| `~/go2_ws/src/go2_nav` | el código y la configuración que se compilan | **sí**, se reemplaza |
+| `~/go2_ws/src/unitree_ros2` | los mensajes de Unitree | no |
+| `~/go2_ws/build`, `install`, `log` | lo que arma `colcon build` (no tocar) | se rehace |
+| `~/.go2_nav` | **tus datos**: `mapas/`, `puntos.json`, `propio.npz` (`go2 calibrar`), `movimiento.json` (`go2 calibrar_mov`), `ajustes.yaml` | **no** |
+
+**Para cambiar un valor sin que se pierda al actualizar:** usa `~/.go2_nav/ajustes.yaml`. Lo que
+pongas ahí pisa el valor del paquete; lo que no pongas queda igual. Al arrancar, `go2 lanzar` dice
+`uso tus ajustes de ... (go2_escaleras, local_costmap, ...)`.
+```
+mkdir -p ~/.go2_nav
+cp ~/go2_ws/install/go2_nav/share/go2_nav/config/ajustes_ejemplo.yaml ~/.go2_nav/ajustes.yaml
+nano ~/.go2_nav/ajustes.yaml     # quita el '#' de lo que quieras cambiar; 2 espacios por nivel
+go2 lanzar                       # relanzar para que tome los cambios
+ros2 param get /local_costmap/local_costmap footprint_padding   # comprobar que lo tomó
+```
+Si algo está mal escrito (falta `ros__parameters:`, una palabra donde va un número), **no se
+cae nada**: `go2 lanzar` lo avisa con `!!` y usa el valor del paquete para eso. `0` donde va `0.0`
+se arregla solo. Un nombre mal escrito avisa `no esta en el paquete` y no hace nada.
+
+Los valores de `go2_escaleras` también cambian **en vivo** (`ros2 param set /go2_escaleras
+radio_giro 0.32`), pero eso se pierde al relanzar. Los de los otros nodos se leen solo al arrancar.
+
+**Dónde está cada cosa** (archivos dentro de `src/go2_nav/`):
+
+| Qué | Archivo | ¿En `ajustes.yaml`? |
+|---|---|---|
+| **Hitbox de Nav2** (`footprint`, `footprint_padding` 0.07) | `config/nav2.yaml`: `local_costmap` y `global_costmap` | sí (`local_costmap: local_costmap: ...`) |
+| Distancia a las paredes (`inflation_radius` 0.55) | `config/nav2.yaml`: `inflation_layer` de los dos costmaps | sí |
+| **Freno de emergencia** (`Huella`, 0.5 s; `Frente`, 70 %) | `config/nav2.yaml`: `collision_monitor` | sí |
+| Velocidades de Nav2 (`vx_max` 0.6, `wz_max` 1.0) | `config/nav2.yaml`: `controller_server` → `FollowPath` | sí |
+| Escaleras: `radio_giro` 0.35, `v_subir`, `v_bajar`, `ancho_min_escalera` | `go2_nav/nucleo/config.py` (`DEFECTO`) | sí (`go2_escaleras`) |
+| Lidar: `obst_min`/`obst_max` (qué altura es obstáculo), reflejos, caídas | `go2_nav/limpiador.py` (los `p("...")`) | sí (`go2_limpiador`) |
+| Driver: zona muerta, empuje, velocidades máximas | `go2_nav/driver.py` (los `p("...")`) | sí (`go2_driver`) |
+| Exploración: radios, tiempos de atasco | `go2_nav/gestor.py` (los `p("...")`) | sí (`go2_gestor`) |
+| Maniobra de escalera: inclinación, tiempos, distancias | `go2_nav/nucleo/escaleras.py` (constantes en mayúsculas) | no: es código |
+| Medidas del cuerpo para el lidar (`LARGO2`, `ANCHO2`) | `go2_nav/nucleo/terreno.py` | no: es código |
+| Freno de `go2 manejar` (20 cm) | `go2_nav/cli.py` (`FRENO`) | no: es código |
+
+Si cambias la forma del hitbox, cambia también el polígono `Huella` del `collision_monitor` (el
+cuerpo + 2 cm) y `HUELLA` en `nucleo/config.py` (el dibujo de `go2 costmap` y las pruebas).
 
 ## Pruebas sin el perro y sin ROS
 ```

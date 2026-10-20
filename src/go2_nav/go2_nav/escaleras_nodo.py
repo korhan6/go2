@@ -37,6 +37,7 @@ from std_msgs.msg import String
 from go2_nav_interfaces.srv import Comando
 from unitree_go.msg import SportModeState
 
+from . import ajustes
 from .nube import leer_xyz, rpy_de_quat
 from .nucleo import config, terreno
 from .nucleo.control import Memoria, ang, guardian
@@ -65,9 +66,12 @@ class Escaleras(Node):
     def __init__(self):
         super().__init__("go2_escaleras")
         self.cfg = dict(config.DEFECTO)
+        p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
         for k in ("v_subir", "v_bajar", "ancho_min_escalera", "v_escalera_max", "w_min", "radio_giro", "obst_min",
                   "obst_max", "sesgo_cerca"):
-            self.cfg[k] = self.declare_parameter(k, self.cfg[k]).value
+            self.cfg[k] = p(k, self.cfg[k]).value
+        # 'ros2 param set /go2_escaleras radio_giro 0.32' cambia el valor EN VIVO (la maniobra usa este cfg)
+        self.add_on_set_parameters_callback(self.cb_parametros)
         self.memoria = Memoria()
         self.detector = Detector()
         self.maniobra = Maniobra(RobotMarcha(self), self.cfg, self.log)
@@ -85,7 +89,7 @@ class Escaleras(Node):
 
         sd = qos_profile_sensor_data
         # la nube SIN fantasmas del limpiador (misma nube del L1, sin el cuerpo ni los fantasmas)
-        self.create_subscription(PointCloud2, self.declare_parameter("topico_nube", "/go2/nube_sin_fantasmas").value,
+        self.create_subscription(PointCloud2, p("topico_nube", "/go2/nube_sin_fantasmas").value,
                                  self.cb_nube, sd)
         self.create_subscription(Odometry, "/odom", self.cb_odom, sd)   # la del driver (1 sola copia desde el perro)
         # inclinacion del cuerpo del IMU del perro: la bajada termina cuando el cuerpo queda plano
@@ -98,6 +102,19 @@ class Escaleras(Node):
         self.create_timer(0.1, self.lazo)
         self.create_timer(0.5, self.publicar)
         self.get_logger().info("go2_escaleras listo: subir de frente, bajar SIEMPRE en reversa")
+
+    def cb_parametros(self, params):
+        from rcl_interfaces.msg import SetParametersResult
+        for prm in params:
+            if prm.name in self.cfg:
+                v = ajustes.tipo_como(prm.value, config.DEFECTO[prm.name])
+                if v is None:
+                    return SetParametersResult(successful=False, reason="%s: valor %r no sirve" % (prm.name, prm.value))
+        for prm in params:
+            if prm.name in self.cfg:
+                self.cfg[prm.name] = ajustes.tipo_como(prm.value, config.DEFECTO[prm.name])
+                self.log("ajuste en vivo: %s = %s" % (prm.name, self.cfg[prm.name]))
+        return SetParametersResult(successful=True)
 
     def log(self, txt):
         self.logs.append(time.strftime("%H:%M:%S ") + txt)
