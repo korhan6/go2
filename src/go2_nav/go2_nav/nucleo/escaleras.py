@@ -65,7 +65,8 @@ class Detector(object):
     def __init__(self):
         self.hist = {"bajar": [], "subir": [], "posible": []}
         self.atras = (None, "nada", 0.0)     # (deteccion, estado_centro, t) mirando hacia atras
-        self.motivo = ""                      # lo que hay delante, en palabras
+        self.motivo = ""                      # lo que hay delante, en palabras (bajada)
+        self.motivo_subida = ""               # idem, para una escalera de subida
         self.centro = "nada"                  # 'caida' | 'suelo' | 'pared' | 'nada' delante
 
     def limpiar(self):
@@ -94,6 +95,10 @@ class Detector(object):
             elif det is not None and det["dist"] < 2.2:
                 self._sumar("posible", det, x, y, yd, suelo, ahora)
             sub = terreno.analizar_subida(fx, fy, h)
+            if d == 0.0:
+                self.motivo_subida = ("escalera de SUBIDA a %.2f m (ancho %.2f m)" % (sub["dist"], sub["ancho"])
+                                      if sub is not None else
+                                      "no veo escalones de subida delante (de frente, a 0.5-2 m, centrado)")
             if sub is not None:
                 self._sumar("subir", sub, x, y, yd, suelo, ahora)
 

@@ -74,6 +74,7 @@ También puedes mandarlo a cualquier punto con **"2D Goal Pose"** en RViz.
    ```
    go2 lanzar rviz:=true            # terminal 1 (empieza un mapa nuevo)
    go2 manejar                      # terminal 2: w/s adelante/atras, a/d girar, q/e de lado, x salir
+                                    #   (frena si hay algo a menos de 20 cm del hocico o la cola)
                                     #   (o con el control remoto de Unitree)
    ```
    Paséalo despacio por toda la casa. Donde quieras volver, en la terminal 3:
@@ -245,6 +246,16 @@ go2 log              # 'DESCARTO', 'no confirme', 'escalera no tomada (...)', 'f
    a `v_bajar` (0.15 m/s): prueba `ros2 param set /go2_escaleras v_bajar 0.2`.
 6. **`no hay espacio para girar junto a la escalera`** → necesita 38 cm libres alrededor para
    girar 180° a 65 cm del borde: pasillos de menos de 80 cm no.
+
+### Subir una escalera (lo más seguro)
+Llévalo (con `go2 manejar` o el control) hasta 0.5–1 m delante del primer escalón, mirándolo de
+frente y centrado, sal de `manejar` con x, y:
+```
+go2 escaleras   # "subida: escalera de SUBIDA a X m" = la ve. Si dice "no veo escalones", acomódalo
+go2 subir       # se alinea, se centra, pone la marcha de escaleras y sube DE FRENTE; arriba empieza
+                # el mapa de ese piso
+```
+`go2 manejar` nunca sube escalones: frena antes (el escalón es "algo delante") a propósito.
 
 ### Órdenes
 ```

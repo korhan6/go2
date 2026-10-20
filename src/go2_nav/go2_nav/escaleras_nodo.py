@@ -195,7 +195,8 @@ class Escaleras(Node):
         self.mover(0.0, 0.0, 0.0)
         if ahora - e["t_quieto"] > 14.0:
             self.espera = None
-            motivo = "no confirme la escalera de %s: %s" % (e["tipo"], self.detector.motivo or "no la veo")
+            visto = self.detector.motivo_subida if e["tipo"] == "subir" else self.detector.motivo
+            motivo = "no confirme la escalera de %s: %s" % (e["tipo"], visto or "no la veo")
             self.resultado = {"ok": False, "motivo": motivo, "tipo": e["tipo"], "sin_empezar": True,
                               "z": z, "pose_odom": [x, y, yaw]}
             self.log(motivo)
@@ -254,6 +255,7 @@ class Escaleras(Node):
                "activa": bool(m.activa or self.espera is not None),
                # lo que el lidar ve delante y por que (no) es una bajada: 'go2 escaleras'
                "delante": self.detector.centro, "diagnostico": self.detector.motivo,
+               "diagnostico_subida": self.detector.motivo_subida,
                "en_escalera": bool(m.en_escalera(self.pose[4] if self.pose else 0.0)),
                "detenido": m.estado == "DETENIDO", "motivo_detenido": m.m.get("motivo_det", ""),
                "resultado": self.resultado, "log": self.logs[-1] if self.logs else "",

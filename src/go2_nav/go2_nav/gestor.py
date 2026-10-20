@@ -1230,9 +1230,13 @@ class Gestor(Node):
         if len(a) >= 2 and a[0] == "vision" and a[1] in ("on", "off", "subida", "requerida"):
             self.esc_vision = {"on": "subida", "off": "off"}.get(a[1], a[1])
             return True, "escaleras con confirmacion de la camara: %s" % self.esc_vision, {}
-        if a and a[0] in ("al_final", "inmediato", "off"):
-            self.politica = a[0]
+        if a and a[0] in ("al_final", "inmediato", "off", "on"):
+            if self.mapa_fijo and a[0] != "off":
+                return False, "con un mapa guardado (un piso) no tomo escaleras", {}
+            self.politica = "al_final" if a[0] == "on" else a[0]
             return True, "escaleras: %s" % self.politica, {}
+        if a:
+            return False, "uso: go2 escaleras [al_final | inmediato | off | vision subida|requerida|off]", {}
         E = self.info.get("escalera") or {}
         def estado_portal(p):
             if p["destino"] is not None:
@@ -1247,7 +1251,9 @@ class Gestor(Node):
                 for c in self.candidatos]
         txt = ("politica: %s | camara confirma: %s | vision %s\n" % (
             self.politica, self.esc_vision, "OK" if self.vision_viva() else "NO llega"))
-        txt += "delante del perro (lidar): %s\n" % (E.get("diagnostico") or "?")
+        txt += "delante del perro (lidar), bajada: %s\n" % (E.get("diagnostico") or "?")
+        txt += "delante del perro (lidar), subida: %s\n" % (E.get("diagnostico_subida") or "?")
+        txt += "para tomar la que tiene DELANTE ahora: go2 subir | go2 bajar\n"
         txt += "\n".join(lista + cand) or "(ninguna confirmada)"
         if self.descartadas:
             txt += "\ndescartadas por la camara (vuelven a valer en %.0f s): %d" % (T_DESCARTE, len(self.descartadas))

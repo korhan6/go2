@@ -94,6 +94,9 @@ def camara(nodo):
         print()
 
 
+FRENO = 0.20     # m desde el borde del cuerpo: 'go2 manejar' no avanza (ni retrocede) si hay algo mas cerca
+
+
 def manejar(nodo):
     """Teleoperacion por teclado: el SLAM sigue mapeando mientras lo manejas."""
     import select
@@ -121,7 +124,7 @@ def manejar(nodo):
           "   w = adelante   s = atras   a / d = girar   q / e = de lado\n"
           "   1 / 2 / 3 = velocidad lenta / normal / rapida     espacio = parar    x = salir\n"
           "   En OTRA terminal:  go2 guardar A   (donde este parado)  ...  go2 ir A\n"
-          "   Frena solo si tiene algo a menos de ~35 cm delante/atras (igual: miralo).")
+          "   Frena solo si tiene algo a menos de %.0f cm del hocico o de la cola (igual: miralo)." % (100 * FRENO))
     vel = {"1": (0.25, 0.5), "2": (0.40, 0.8), "3": (0.55, 1.0)}
     nivel = "2"
     teclas = {"w": (1, 0, 0), "s": (-0.6, 0, 0), "a": (0, 0, 1), "d": (0, 0, -1),
@@ -131,7 +134,9 @@ def manejar(nodo):
     orden, t_tecla, t_print = (0.0, 0.0, 0.0), 0.0, 0.0
     try:
         tty.setcbreak(fd)
-        while rclpy.ok():
+        while True:
+            if not rclpy.ok():
+                break
             if select.select([sys.stdin], [], [], 0.05)[0]:
                 k = sys.stdin.read(1).lower()
                 if k in ("x", "\x03", "\x1b"):
@@ -148,9 +153,9 @@ def manejar(nodo):
                 orden = (0.0, 0.0, 0.0)
             vx, vy, wz = orden
             aviso = ""
-            if vx > 0 and H.get("adelante") is not None and H["adelante"] < 0.40:
-                vx, aviso = 0.0, "  ALGO DELANTE: no avanzo"
-            if vx < 0 and H.get("atras") is not None and H["atras"] < 0.30:
+            if vx > 0 and H.get("adelante") is not None and H["adelante"] < FRENO:
+                vx, aviso = 0.0, "  ALGO DELANTE: no avanzo (si es una escalera: sal con x y 'go2 subir')"
+            if vx < 0 and H.get("atras") is not None and H["atras"] < FRENO:
                 vx, aviso = 0.0, "  ALGO DETRAS: no retrocedo"
             tw = Twist()
             tw.linear.x, tw.linear.y, tw.angular.z = vx, vy, wz
@@ -158,9 +163,11 @@ def manejar(nodo):
             rclpy.spin_once(nodo, timeout_sec=0.0)
             if time.monotonic() - t_print > 0.5:
                 t_print = time.monotonic()
-                sys.stdout.write("\r  vel %s  orden x=%.2f y=%.2f giro=%.2f  libre adel=%s atras=%s%s          "
+                sys.stdout.write("\r  vel %s  orden x=%.2f y=%.2f giro=%.2f  libre adel=%s atras=%s%s\033[K"
                                  % (nivel, vx, vy, wz, H.get("adelante", "-"), H.get("atras", "-"), aviso))
                 sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, viejo)
         # con Ctrl+C rclpy ya cerro su contexto y no se puede publicar: el driver para solo al
