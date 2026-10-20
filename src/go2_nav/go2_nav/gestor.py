@@ -52,9 +52,9 @@ from .nucleo import exploracion as EX
 from .nucleo.control import ang
 
 try:
-    from slam_toolbox.srv import DeserializePoseGraph, Reset, SerializePoseGraph
+    from slam_toolbox.srv import DeserializePoseGraph, Reset, SaveMap, SerializePoseGraph
 except ImportError:          # sin slam_toolbox: un solo piso
-    DeserializePoseGraph = Reset = SerializePoseGraph = None
+    DeserializePoseGraph = Reset = SaveMap = SerializePoseGraph = None
 
 DATOS = os.path.expanduser("~/.go2_nav")
 NAVEGANDO = ("explorando", "yendo", "volviendo")
@@ -88,9 +88,20 @@ class Gestor(Node):
         if self.esc_vision not in VISION_MODOS:
             self.get_logger().warn("escaleras_vision=%r desconocido: uso 'subida'" % self.esc_vision)
             self.esc_vision = "subida"
+        # mapa guardado (go2 lanzar mapa:=NOMBRE): el perro solo se UBICA en el mapa; no explora ni
+        # cruza escaleras (cambiaria el mapa). Los puntos van con el mapa: mapas/NOMBRE.puntos.json
+        self.mapa_fijo = p("mapa", "").value.strip()
+        self.mapa_sesion = None      # el mapa que se guardo en ESTA sesion (los puntos nuevos van tambien ahi)
         os.makedirs(os.path.join(DATOS, "mapas"), exist_ok=True)
-        self.ruta_puntos = os.path.join(DATOS, "puntos.json")
+        self.ruta_puntos = (os.path.join(DATOS, "mapas", self.mapa_fijo + ".puntos.json") if self.mapa_fijo
+                            else os.path.join(DATOS, "puntos.json"))
+        if not self.mapa_fijo and os.path.exists(self.ruta_puntos):
+            # mapeando se arma un mapa NUEVO (otro origen): los puntos de antes ya no valen en el.
+            # Se apartan (los de un mapa guardado estan en mapas/NOMBRE.puntos.json)
+            os.replace(self.ruta_puntos, os.path.join(DATOS, "puntos_sesion_anterior.json"))
         self.puntos = self._cargar_puntos()
+        if self.mapa_fijo:
+            self.politica = "off"
 
         cb = ReentrantCallbackGroup()
         self.lock = threading.RLock()
@@ -133,6 +144,7 @@ class Gestor(Node):
                              "/local_costmap/clear_entirely_local_costmap")]
         if SerializePoseGraph is not None:
             self.cli_guardar = self.create_client(SerializePoseGraph, "/slam_toolbox/serialize_map", callback_group=cb)
+            self.cli_guardar_img = self.create_client(SaveMap, "/slam_toolbox/save_map", callback_group=cb)
             self.cli_cargar = self.create_client(DeserializePoseGraph, "/slam_toolbox/deserialize_map", callback_group=cb)
             self.cli_reset = self.create_client(Reset, "/slam_toolbox/reset", callback_group=cb)
         self.create_service(Comando, "/go2/comando", self.srv_comando, callback_group=MutuallyExclusiveCallbackGroup())
@@ -181,7 +193,11 @@ class Gestor(Node):
         self.create_timer(0.5, self.lazo, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(0.5, self.publicar_estado, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(1.0, self.publicar_explorado, callback_group=MutuallyExclusiveCallbackGroup())
-        self.log("go2_gestor listo (escaleras: %s, camara: %s)" % (self.politica, self.esc_vision))
+        if self.mapa_fijo:
+            self.log("go2_gestor listo: NAVEGANDO en el mapa guardado '%s' (%d puntos: %s)"
+                     % (self.mapa_fijo, len(self.puntos), ", ".join(sorted(self.puntos)) or "-"))
+        else:
+            self.log("go2_gestor listo: MAPEANDO (escaleras: %s, camara: %s)" % (self.politica, self.esc_vision))
 
     # ------------------------------------------------------------------ utilidades
     def log(self, txt):
@@ -205,8 +221,12 @@ class Gestor(Node):
             return {}
 
     def _guardar_puntos(self):
-        with open(self.ruta_puntos, "w") as f:
-            json.dump(self.puntos, f, indent=1)
+        rutas = [self.ruta_puntos]
+        if self.mapa_sesion:
+            rutas.append(os.path.join(DATOS, "mapas", self.mapa_sesion + ".puntos.json"))
+        for ruta in rutas:
+            with open(ruta, "w") as f:
+                json.dump(self.puntos, f, indent=1)
 
     def _tf(self, de, a):
         try:
@@ -1129,6 +1149,13 @@ class Gestor(Node):
             self.modo, self.motivo = "quieto", "calibrando"
             self.cli_calibrar.call_async(Trigger.Request())
             return True, "calibrando: gira ~2 vueltas en el sitio. Mira 'go2 ver'", {}
+        if o == "guardar_mapa":
+            return self._orden_guardar_mapa(a)
+        if o == "mapas":
+            d = os.path.join(DATOS, "mapas")
+            nombres = sorted(f[:-10] for f in os.listdir(d) if f.endswith(".posegraph") and not f.startswith("piso_"))
+            return True, ("mapas guardados: %s\nnavegar en uno: go2 lanzar mapa:=NOMBRE rviz:=true" % ", ".join(nombres)
+                          if nombres else "no hay mapas guardados (go2 guardar_mapa NOMBRE)"), {"mapas": nombres}
         if o == "levantar":
             self.cli_levantar.call_async(Trigger.Request())
             return True, "levantando", {}
@@ -1146,7 +1173,35 @@ class Gestor(Node):
             return True, "\n".join(self.logs), {}
         return False, "orden desconocida: %s (go2 ayuda)" % o, {}
 
+    def _orden_guardar_mapa(self, a):
+        """Guarda el mapa del SLAM (para navegar despues con 'go2 lanzar mapa:=NOMBRE') y los puntos."""
+        if self.mapa_fijo:
+            return False, "ya estoy en el mapa guardado '%s' (no cambia): no hay nada nuevo que guardar" % self.mapa_fijo, {}
+        if not a:
+            return False, "uso: go2 guardar_mapa NOMBRE   (por ejemplo: go2 guardar_mapa casa)", {}
+        nombre = "".join(c for c in a[0] if c.isalnum() or c in "-_")
+        if not nombre or nombre.startswith("piso_"):
+            return False, "nombre invalido (letras, numeros, - y _)", {}
+        if SerializePoseGraph is None:
+            return False, "falta slam_toolbox", {}
+        base = os.path.join(DATOS, "mapas", nombre)
+        r = self._llamar(self.cli_guardar, SerializePoseGraph.Request(filename=base), 25.0)
+        if r is None or not os.path.exists(base + ".posegraph"):
+            return False, "slam_toolbox no guardo el mapa (esta corriendo? hay mapa en RViz?)", {}
+        img = SaveMap.Request()
+        img.name.data = base
+        self._llamar(self.cli_guardar_img, img, 10.0)          # imagen .pgm/.yaml para verlo (opcional)
+        self.mapa_sesion = nombre
+        self._guardar_puntos()                                  # y los puntos que guardes despues, tambien
+        self.log("mapa '%s' guardado (%s), con %d puntos" % (nombre, base, len(self.puntos)))
+        return True, ("mapa '%s' guardado con %d puntos (%s).\nPara navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
+                      "(pon al perro donde EMPEZASTE a mapear, o marca donde esta con '2D Pose Estimate' en RViz)"
+                      % (nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno", nombre)), {}
+
     def _orden_explorar(self, pose, a):
+        if self.mapa_fijo:
+            return False, ("estoy navegando en el mapa guardado '%s': no exploro (no lo cambio). Para mapear de "
+                           "nuevo: go2 lanzar (sin mapa:=)" % self.mapa_fijo), {}
         if pose is not None:
             self.puntos["inicio"] = {"x": pose[0], "y": pose[1], "yaw": pose[2], "piso": self.piso or 0}
             self._guardar_puntos()
@@ -1200,6 +1255,8 @@ class Gestor(Node):
 
     def _orden_tomar(self, o, pose):
         """Tomar a mano la escalera que tiene delante."""
+        if self.mapa_fijo:
+            return False, "con un mapa guardado (un solo piso) no tomo escaleras", {}
         req = Comando.Request()
         req.orden, req.args = "tomar", [o, str(self.odom[3] if self.odom else 0.0)]
         self.cancelar()
@@ -1222,7 +1279,7 @@ class Gestor(Node):
     def estado(self):
         pose = self.pose()
         E = self.info.get("escalera") or {}
-        return {"modo": self.modo, "motivo": self.motivo,
+        return {"modo": self.modo, "motivo": self.motivo, "mapa_guardado": self.mapa_fijo or None,
                 "pose": [round(v, 2) for v in pose] if pose else None,
                 "piso": self.piso, "pisos": len(self.pisos),
                 "escaleras": len([p for p in self.portales if not p["retorno"]]),
@@ -1241,7 +1298,7 @@ class Gestor(Node):
                 "ultimo_log": self.logs[-1] if self.logs else ""}
 
     def publicar_estado(self):
-        if self.pose() is not None and "inicio" not in self.puntos and self.mapa is not None:
+        if not self.mapa_fijo and self.pose() is not None and "inicio" not in self.puntos and self.mapa is not None:
             p = self.pose()
             self.puntos["inicio"] = {"x": p[0], "y": p[1], "yaw": p[2], "piso": self.piso or 0}
             self._guardar_puntos()

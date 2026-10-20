@@ -68,6 +68,36 @@ go2 ver
    ```
 También puedes mandarlo a cualquier punto con **"2D Goal Pose"** en RViz.
 
+**MAPEAR TÚ Y QUE EL PERRO NAVEGUE SOLO (recomendado):**
+
+1. Mapear (una vez):
+   ```
+   go2 lanzar rviz:=true            # terminal 1 (empieza un mapa nuevo)
+   go2 manejar                      # terminal 2: w/s adelante/atras, a/d girar, q/e de lado, x salir
+                                    #   (o con el control remoto de Unitree)
+   ```
+   Paséalo despacio por toda la casa. Donde quieras volver, en la terminal 3:
+   ```
+   go2 guardar cocina               # cualquier nombre sin espacios: cocina, sala, cuarto_2
+   ```
+   Al terminar:
+   ```
+   go2 guardar_mapa casa            # guarda el mapa y los puntos en ~/.go2_nav/mapas/
+   ```
+2. Navegar (siempre que quieras, otro día también):
+   ```
+   go2 lanzar mapa:=casa rviz:=true # el perro se UBICA en el mapa guardado (no lo cambia)
+   go2 ir cocina
+   go2 ir sala
+   go2 casa                         # donde empezaste a mapear
+   ```
+   - Pon al perro donde EMPEZASTE a mapear. Si está en otro lado, en RViz usa
+     "2D Pose Estimate": clic donde está y arrastra hacia donde mira.
+   - Puntos nuevos con el mapa cargado: llévalo con `go2 manejar` y `go2 guardar NOMBRE`
+     (quedan guardados con el mapa).
+   - `go2 puntos` lista los puntos; `go2 mapas` los mapas guardados.
+   - Con un mapa cargado no explora ni toma escaleras (es de un piso).
+
 **Mapeo a mano (si la exploración automática no sale del cuarto):**
 ```
 go2 lanzar rviz:=true          # terminal 1

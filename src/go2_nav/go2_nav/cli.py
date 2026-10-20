@@ -26,6 +26,13 @@
                         y detras) y la COMPENSA: pide lo necesario para que haga lo que Nav2 quiere
   go2 camara            lo que ve la camara en vivo (YOLO en la GPU): fps, objetos, escalera
   go2 vision_probar [foto.jpg|camara]   prueba la GPU y el modelo sin ROS
+  MAPEAR A MANO Y NAVEGAR SOLO (recomendado):
+    go2 lanzar rviz:=true        1) mapear: manejalo con 'go2 manejar' o con el control remoto
+    go2 guardar A                   por toda la casa, guardando puntos donde quieras ir
+    go2 guardar_mapa casa        2) guardar el mapa (y los puntos)
+    go2 lanzar mapa:=casa rviz:=true   3) otro dia: navegar en ese mapa (no lo cambia)
+    go2 ir A | go2 casa | "2D Goal Pose" en RViz
+  go2 mapas             mapas guardados
   go2 calibrar          gira 2 vueltas y aprende los puntos fantasma del propio perro
   go2 levantar          pone al perro de pie
   go2 log               ultimos mensajes
@@ -110,7 +117,7 @@ def manejar(nodo):
         f = cli.call_async(r)
         rclpy.spin_until_future_complete(nodo, f, timeout_sec=5.0)
     print(__doc__.split("\n")[0])
-    print("MANEJAR (manten apretada la tecla; al soltar se para):\n"
+    print("MANEJAR (manten apretada la tecla; al soltar se para). Tambien puedes usar el control remoto.\n"
           "   w = adelante   s = atras   a / d = girar   q / e = de lado\n"
           "   1 / 2 / 3 = velocidad lenta / normal / rapida     espacio = parar    x = salir\n"
           "   En OTRA terminal:  go2 guardar A   (donde este parado)  ...  go2 ir A\n"
@@ -491,7 +498,7 @@ def main():
         req.orden = args[0].replace("-", "_")
         req.args = args[1:]
         fut = cli.call_async(req)
-        rclpy.spin_until_future_complete(nodo, fut, timeout_sec=10.0)
+        rclpy.spin_until_future_complete(nodo, fut, timeout_sec=40.0 if req.orden == "guardar_mapa" else 10.0)
         r = fut.result()
         if r is None:
             print("sin respuesta")

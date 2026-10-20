@@ -4,6 +4,8 @@
     ros2 launch go2_nav go2.launch.py rviz:=true   # + RViz con mapa, ruta y puntos fantasma
     ros2 launch go2_nav go2.launch.py sim:=true mundo:=pasillo   # sin perro (simulado)
     ros2 launch go2_nav go2.launch.py vision:=false  # sin la camara/YOLO
+    ros2 launch go2_nav go2.launch.py mapa:=casa     # NAVEGAR con un mapa guardado (go2 guardar_mapa casa):
+                                                     # el perro solo se ubica en el mapa (no lo cambia)
 
 Vision (go2_vision): corre con el Python de ~/.go2_nav/venv_vision (PyTorch + YOLO con CUDA, lo
 instala instalar.sh), aparte del Python del sistema que usa ROS.
@@ -24,6 +26,41 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 VENV_PY = os.path.expanduser("~/.go2_nav/venv_vision/bin/python")
+MAPAS = os.path.expanduser("~/.go2_nav/mapas")
+
+
+def _slam(context):
+    """SLAM: mapeando (sin mapa:=) o ubicandose en un mapa guardado (mapa:=NOMBRE)."""
+    import yaml
+    share = get_package_share_directory("go2_nav")
+    slam = os.path.join(share, "config", "slam.yaml")
+    st = get_package_share_directory("slam_toolbox")
+    mapa = LaunchConfiguration("mapa").perform(context).strip()
+    if not mapa:
+        return [IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(st, "launch", "online_async_launch.py")),
+            launch_arguments={"slam_params_file": slam, "use_sim_time": "false"}.items())]
+    base = os.path.join(MAPAS, mapa)
+    if not os.path.exists(base + ".posegraph"):
+        return [LogInfo(msg="!! NO EXISTE el mapa '%s' (%s.posegraph). Mapas guardados: %s. "
+                            "Lanza sin mapa:= y guardalo con: go2 guardar_mapa %s"
+                            % (mapa, base, sorted(f[:-10] for f in os.listdir(MAPAS) if f.endswith(".posegraph"))
+                               if os.path.isdir(MAPAS) else [], mapa))]
+    with open(slam) as f:
+        p = yaml.safe_load(f)
+    q = p["slam_toolbox"]["ros__parameters"]
+    q.update({"mode": "localization", "map_file_name": base,
+              # arranca donde EMPEZO el mapeo; si el perro esta en otro lado: "2D Pose Estimate" en RViz
+              "map_start_at_dock": True,
+              # localizacion: pocas nubes en el buffer y cierre de lazo rapido (como el ejemplo oficial)
+              "scan_buffer_size": 3, "loop_match_minimum_chain_size": 3})
+    tmp = "/tmp/go2_slam_localizacion.yaml"
+    with open(tmp, "w") as f:
+        yaml.safe_dump(p, f)
+    return [LogInfo(msg="go2_nav: NAVEGANDO en el mapa guardado '%s' (no se modifica)" % mapa),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(st, "launch", "localization_launch.py")),
+                launch_arguments={"slam_params_file": tmp, "use_sim_time": "false"}.items())]
 
 
 def _vision_y_gestor(context):
@@ -36,7 +73,8 @@ def _vision_y_gestor(context):
     esc_vision = LaunchConfiguration("escaleras_vision").perform(context) or ("off" if sim else "subida")
     acciones.append(Node(package="go2_nav", executable="gestor", name="go2_gestor", output="screen",
                          parameters=[{"escaleras": LaunchConfiguration("escaleras").perform(context),
-                                      "escaleras_vision": esc_vision}]))
+                                      "escaleras_vision": esc_vision,
+                                      "mapa": LaunchConfiguration("mapa").perform(context).strip()}]))
     if vision and not sim:
         if os.path.exists(VENV_PY):
             acciones.append(ExecuteProcess(
@@ -51,7 +89,6 @@ def _vision_y_gestor(context):
 def generate_launch_description():
     share = get_package_share_directory("go2_nav")
     nav2 = os.path.join(share, "config", "nav2.yaml")
-    slam = os.path.join(share, "config", "slam.yaml")
     bt = os.path.join(share, "config", "ruta_comprometida.xml")
     rviz_cfg = os.path.join(share, "rviz", "go2.rviz")
 
@@ -75,6 +112,7 @@ def generate_launch_description():
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
+        DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
 
         Node(package="go2_nav", executable="perro_sim", name="go2_perro_sim", output="screen",
              parameters=[{"mundo": mundo, "fantasmas": ParameterValue(fantasmas, value_type=bool),
@@ -89,11 +127,9 @@ def generate_launch_description():
              arguments=["--x", "0.29", "--frame-id", "base_link", "--child-frame-id", "lidar"]),
         Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen"),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen"),
-        # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("slam_toolbox"),
-                                                       "launch", "online_async_launch.py")),
-            launch_arguments={"slam_params_file": slam, "use_sim_time": "false"}.items()),
+        # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):
+        # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE
+        OpaqueFunction(function=_slam),
 
         Node(package="nav2_controller", executable="controller_server", output="screen",
              parameters=[nav2], remappings=remap_vel, respawn=True, respawn_delay=2.0),
