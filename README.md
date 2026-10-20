@@ -195,8 +195,9 @@ go2 lanzar camara:=videohub   # forzar la otra fuente de video
      firme ni una pared, si el lidar llega a ver), pone la marcha y **baja de espaldas**;
   4. abajo, sale 30 cm, quita la marcha y se vuelve a poner de frente.
 - **Seguridad:**
-  - un balcón o un desnivel sin escalones **nunca** se toma como escalera: hace falta ver la
-    huella del primer escalón (plana, a 9–30 cm bajo el borde, en varios carriles);
+  - **solo para dentro de la casa:** todo desnivel empinado de borde recto se toma como escalera
+    de bajada (no hace falta ver el primer escalón; no hay balcones). Una rampa suave no es escalera;
+  - si pasó el borde y no bajó nada, se detiene;
   - antes de pisar los escalones, cualquier duda = cancela;
   - ya encima de los escalones nunca cambia de marcha: si algo falla queda **DETENIDO** y
     espera `go2 seguir` o el control remoto.

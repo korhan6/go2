@@ -74,54 +74,39 @@ def prueba_deteccion():
         det, centro, motivo = que_ve(M.casa_demo(), BORDE_BAJADA + terreno.LARGO2 + d, math.pi)
         vistas[d] = "escalera" if det is not None and det["huella"] else ("posible" if det is not None else "no")
         print("   hocico a %.2f m: %-6s %s" % (d, centro, motivo))
-    assert vistas[1.0] == vistas[0.7] == "posible", "de lejos tiene que verla como POSIBLE bajada (sin escalon)"
-    assert vistas[0.5] == vistas[0.35] == "escalera", "con el hocico a 0.35-0.5 m del borde tiene que confirmarla"
-    print("== un BALCON (desnivel sin escalones) nunca es escalera")
-    for d in (0.5, 0.3, 0.2):
+    assert all(vistas[d] == "escalera" for d in (1.0, 0.7, 0.5, 0.35)), \
+        "dentro de la casa todo desnivel empinado de borde recto es escalera, tambien de lejos"
+    print("== desnivel SIN escalones: dentro de la casa tambien se toma como escalera (decision del usuario)")
+    for d in (0.5, 0.3):
         det, centro, motivo = que_ve(balcon(), 11.2 + terreno.LARGO2 + d, math.pi)
         print("   hocico a %.2f m: %-6s %s" % (d, centro, motivo))
-        assert det is None or not det["huella"], "un balcon se tomo por escalera!"
     print("   OK")
 
 
 def inspeccion(mundo, x_borde, d_nose=1.0):
-    """Lo que hace el sistema con una caida vista de lejos: el Detector la registra como POSIBLE
-    (el gestor la vuelve portal 'por confirmar'), y al ir a verla go2_escaleras se acerca
-    despacio (como escaleras_nodo.acercarse: hasta 25 cm del borde, max 0.8 m) buscando el
-    escalon. Devuelve (posible_vista, bajada_confirmada, hocico_final_al_borde)."""
+    """Perro parado a d_nose del borde mirando la bajada: cuanto tarda el Detector en confirmarla."""
     r = M.RobotSim(mundo, x=x_borde + terreno.LARGO2 + d_nose, y=6.6, yaw=math.pi, ruido_real=True)
     cfg = dict(config.DEFECTO)
-    det, mem = Detector(), Memoria()
-    suelo, posible, x0 = None, None, r.x
-    for k in range(300):
+    det, mem, suelo = Detector(), Memoria(), None
+    for k in range(40):
         r.dormir(0.1)
-        ahora = r.t
-        px, py, pz, yw, pitch, _r, _ = r.pose()
+        px, py, pz, yw, *_ = r.pose()
         for _t, xyz in r.nubes_nuevas():
             limpio = terreno.corregir_cerca(terreno.quitar_propio(xyz, px, py, pz, yw, suelo), px, py, yw, cfg["sesgo_cerca"])
-            mem.sumar(limpio, px, py, ahora)
+            mem.sumar(limpio, px, py, r.t)
         local = mem.puntos()
         suelo = terreno.suelo_abs(local, px, py, pz, yw, previo=suelo)
-        holg, _ = guardian(local, (px, py, pz, yw), suelo, cfg)
-        det.actualizar(local, (px, py, pz, yw), suelo, ahora, alrededor=(k % 10 == 0))
-        if posible is None:
-            posible = det.confirmada("posible", ahora, (px, py))
-            continue                                     # primero: verla de lejos, quieto
-        if det.confirmada("bajar", ahora, (px, py)) is not None:
-            return True, True, r.x - terreno.LARGO2 - x_borde
-        d_ob, d_ca, d_hu = holg["adelante"]
-        r.mover(0.07 if min(d_ob, d_ca, d_hu) > 0.25 and x0 - r.x < 0.8 else 0.0, 0.0, 0.0)
-    return posible is not None, False, r.x - terreno.LARGO2 - x_borde
+        det.actualizar(local, (px, py, pz, yw), suelo, r.t)
+        if det.confirmada("bajar", r.t, (px, py)) is not None:
+            return True, r.t
+    return False, r.t
 
 
 def prueba_posible():
-    print("== bajada vista de LEJOS -> 'posible' -> ir a mirarla de cerca")
-    for nombre, mundo, borde in (("escalera", M.casa_demo(), BORDE_BAJADA), ("balcon", balcon(), 11.2)):
-        vista, confirmada, d = inspeccion(mundo, borde)
-        print("   %-8s: posible=%s  confirmada=%s  (hocico a %.2f m del borde al terminar)" % (nombre, vista, confirmada, d))
-        assert vista, "de lejos tiene que registrarla como posible bajada"
-        assert confirmada == (nombre == "escalera"), "escalera: de cerca SI; balcon: NUNCA"
-        assert d > 0.15, "nunca tan cerca del borde"
+    print("== bajada vista de LEJOS (hocico a 1 m): se confirma como escalera sin acercarse")
+    ok, t = inspeccion(M.casa_demo(), BORDE_BAJADA)
+    print("   confirmada=%s en %.1f s" % (ok, t))
+    assert ok
     print("   OK")
 
 

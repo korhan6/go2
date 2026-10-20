@@ -316,43 +316,52 @@ class Rejilla(object):
 
 
 def analizar_bajada(fx, fy, h):
-    """Busca una escalera (o escalon) hacia abajo delante del perro.
+    """Busca una escalera hacia abajo delante del perro.
+
+    USO DENTRO DE LA CASA: todo desnivel EMPINADO de borde RECTO es una escalera de bajada (no hay
+    balcones). Ya no hace falta ver el primer escalon (de lejos queda en la sombra del lidar y no
+    se confirmaba nunca). Lo que sigue sin ser escalera: una rampa suave, y un borde que no es
+    recto (sombras, objetos sueltos).
 
     Devuelve (deteccion | None, estado_centro, motivo).
       deteccion: dict(bx, by, dist, ang, centro, ancho, prof, abierta, huella)
-        huella True  = se ve el primer escalon: ES una escalera de bajada
-               False = caida empinada de borde recto sin huella vista: POSIBLE bajada (o balcon)
         bx, by punto central del borde (m, coordenadas del perro)
         dist   distancia perpendicular del centro del perro al borde (m)
         ang    angulo de la normal del borde respecto al frente del perro (rad, + = izquierda)
         centro desplazamiento lateral del centro de la escalera (m, + = izquierda)
         ancho  ancho visto de la bajada (m); abierta = llega al limite de lo que se mira
         prof   lo mas bajo que se ve despues del borde (m, negativo)
+        huella siempre True (es escalera); huella_vista: si ademas se vio el primer escalon
       estado_centro: 'caida' | 'suelo' | 'pared' | 'nada' (lo que hay justo delante)
       motivo: por que NO es (o si es) una escalera, en palabras (para 'go2 escaleras')
     """
     rj = Rejilla(fx, fy, h)
     estados = [rj.carril(k) for k in range(len(rj.centros))]
-    medio = [k for k in range(len(rj.centros)) if abs(rj.centros[k]) <= 0.15 + 1e-6]
+    nl = len(rj.centros)
+    medio = [k for k in range(nl) if abs(rj.centros[k]) <= 0.15 + 1e-6]
     tipos = [estados[k][0] for k in medio]
     estado_centro = max(set(tipos), key=tipos.count)
-    if any(estados[k][0] != "caida" for k in medio):
+    bajan = [k for k in medio if estados[k][0] == "caida"]
+    # 3 de los 4 carriles del centro (un cable, una sombra o una pata de la baranda no la tapan)
+    if len(bajan) < len(medio) - 1:
         return None, estado_centro, {"suelo": "delante hay suelo", "pared": "algo delante",
-                                     "nada": "no veo el suelo delante (o un hueco sin fondo)"}.get(
+                                     "nada": "no veo el suelo delante (muy pegado al borde o mirando al vacio)",
+                                     "caida": "baja solo en %d de %d carriles del centro: ponlo de frente "
+                                              "y centrado" % (len(bajan), len(medio))}.get(
             estado_centro, "delante: " + estado_centro)
-    # ensancha desde el centro mientras los carriles tambien sean bajada
-    k0, k1 = min(medio), max(medio)
-    while k0 > 0 and estados[k0 - 1][0] == "caida":
-        k0 -= 1
-    while k1 < len(rj.centros) - 1 and estados[k1 + 1][0] == "caida":
-        k1 += 1
-    ks = np.arange(k0, k1 + 1)
+    # ensancha desde el centro mientras los carriles tambien bajen (tolera 1 carril sin ver)
+    k0, k1 = min(bajan), max(bajan)
+    while k0 > 0 and (estados[k0 - 1][0] == "caida" or (k0 > 1 and estados[k0 - 2][0] == "caida")):
+        k0 -= 1 if estados[k0 - 1][0] == "caida" else 2
+    while k1 < nl - 1 and (estados[k1 + 1][0] == "caida" or (k1 < nl - 2 and estados[k1 + 2][0] == "caida")):
+        k1 += 1 if estados[k1 + 1][0] == "caida" else 2
+    ks = np.array([k for k in range(k0, k1 + 1) if estados[k][0] == "caida"])
     lat = rj.centros[ks]
     borde = np.array([X0 + estados[k][1] * PASO for k in ks])
     b, a = np.polyfit(lat, borde, 1)          # borde(lat) = a + b * lat
     resid = borde - (a + b * lat)
     if float(np.std(resid)) > 0.07 or abs(b) > 1.2:   # no es una linea recta: sombra, objetos
-        return None, estado_centro, "el borde de la caida no es recto (sombra u objetos)"
+        return None, estado_centro, "el borde de la bajada no es recto (sombra u objetos)"
     prof, niveles = [], []
     empinados = 0
     for k in ks:
@@ -371,28 +380,21 @@ def analizar_bajada(fx, fy, h):
             niveles.append(n)
     if len(prof) < 2 or empinados < max(2, len(ks) // 2):
         return None, estado_centro, "baja suave: rampa o desnivel chico, no escalera"
-    # SEGURIDAD: sin la huella del primer escalon NO es escalera (precipicio o dudoso). Igual se
-    # devuelve la geometria (huella=False): es una POSIBLE bajada, que el gestor va a mirar de
-    # cerca; la maniobra solo arranca con huella=True.
-    huella = len(niveles) >= max(3, (len(ks) * 2) // 3) and float(np.std(niveles)) <= 0.04
     norma = math.sqrt(1.0 + b * b)
-    c = float(0.5 * (lat[0] + lat[-1]))
+    c = float(0.5 * (rj.centros[k0] + rj.centros[k1]))
     det = {
         "bx": float(a + b * c),           # punto central del borde (coordenadas del perro)
         "by": c,
         "dist": float(a / norma),
         "ang": float(math.atan2(-b, 1.0)),
         "centro": c,
-        "ancho": float(lat[-1] - lat[0] + CARRIL),
-        "abierta": bool(k0 == 0 or k1 == len(rj.centros) - 1),
+        "ancho": float(rj.centros[k1] - rj.centros[k0] + CARRIL),
+        "abierta": bool(k0 == 0 or k1 == nl - 1),
         "prof": float(np.median(prof)),
-        "huella": bool(huella),
+        "huella": True,
+        "huella_vista": bool(len(niveles) >= max(3, (len(ks) * 2) // 3) and float(np.std(niveles)) <= 0.04),
     }
-    if not huella:
-        return det, "caida", ("caida a %.2f m pero NO veo el primer escalon (huella en %d de %d carriles): "
-                              "balcon/desnivel, o el escalon queda en la sombra del lidar (acercarse)"
-                              % (float(a) - LARGO2, len(niveles), len(ks)))
-    return det, estado_centro, "escalera de bajada a %.2f m (ancho %.2f m)" % (det["dist"], det["ancho"])
+    return det, "caida", "escalera de bajada a %.2f m (ancho %.2f m)" % (det["dist"], det["ancho"])
 
 
 def analizar_subida(fx, fy, h):
