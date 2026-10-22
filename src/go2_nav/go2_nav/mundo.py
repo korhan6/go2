@@ -23,7 +23,13 @@ class Mundo(object):
         self.W, self.H = int(ancho / RES), int(alto / RES)
         self.suelo = np.zeros((self.H, self.W), np.float32)    # altura del piso
         self.pared = np.zeros((self.H, self.W), bool)
+        self.mesas = []
         self.borde()
+
+    def mesa(self, x0, y0, x1, y1, z=0.72):
+        """Tablero de una mesa (superficie colgada a z m, con aire debajo): el lidar ve su cara de
+        abajo. El mapa de alturas no puede tener nada colgado, asi que va aparte."""
+        self.mesas.append((min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1), z))
 
     def borde(self):
         self.pared[:2, :] = self.pared[-2:, :] = True
@@ -93,6 +99,49 @@ def casa_demo():
     return m
 
 
+def mundo_puerta():
+    """Como la casa del usuario (foto del 19-oct): cuarto con el perro mirando una puerta de
+    72 cm (la hoja abierta hacia adentro, pegada al marco izquierdo); detras, un pasillo; a la
+    izquierda del pasillo, una escalera que BAJA 1.19 m (7 escalones de 17 cm); al fondo, un bano."""
+    m = Mundo(10.0, 7.0)
+    m.rect_pared(0.0, 4.0, 10.0, 4.1)            # pared del cuarto (arriba)
+    m.rect_libre(4.6, 4.0, 5.32, 4.1)            # la puerta: 72 cm
+    m.rect_pared(4.55, 3.2, 4.6, 4.0)            # la hoja de la puerta, abierta hacia el cuarto
+    m.rect_pared(3.0, 0.0, 3.1, 4.0)             # pared izquierda del cuarto
+    m.rect_pared(8.0, 0.0, 8.1, 4.0)             # pared derecha del cuarto
+    m.rect_pared(3.2, 1.4, 4.0, 2.4)             # mesa
+    # escalera que baja hacia -x desde el borde x = 4.2 (a la izquierda saliendo por la puerta)
+    m.escalera_x(2.52, 4.1, 5.0, 6, 0.28, 0.17, z0=-1.19)
+    m.rect_altura(0.1, 4.1, 2.52, 5.0, -1.19)    # piso de abajo
+    m.rect_pared(0.0, 5.0, 4.2, 5.05)            # baranda / pared del lado de la escalera
+    m.rect_pared(0.0, 5.05, 4.2, 7.0)
+    m.rect_pared(4.2, 5.3, 10.0, 5.35)           # pared del fondo del pasillo
+    m.rect_libre(5.6, 5.3, 6.3, 5.35)            # puerta del bano (70 cm)
+    m.rect_pared(7.2, 5.35, 7.25, 7.0)           # el bano: 3 x 1.6 m
+    return m, (5.0, 2.2, math.pi / 2)
+
+
+def escalera_pasillo(pared_abajo=None, pared_arriba=None):
+    """Como la escalera de la casa del usuario (fotos del 19/20-oct): 9 escalones de 17 cm entre dos
+    paredes (85 cm de ancho), con el pasillo de abajo igual de angosto. Sube hacia +x desde x = 3.0;
+    arriba, un pasillo ancho a 1.53 m desde x = 5.43. pared_abajo = x de una pared detras del pie de la escalera
+    (para ver que la bajada en reversa para a tiempo). pared_arriba = x de una pared enfrente del
+    final de la subida (para ver que al llegar arriba no sigue de frente)."""
+    m = Mundo(8.0, 3.0)
+    arriba = 3.0 + 9 * 0.27
+    m.rect_altura(arriba, 0.0, 8.0, 3.0, 1.53)                 # arriba: un pasillo ancho
+    m.rect_altura(0.5, 0.0, arriba, 1.0, 1.53)                 # a los costados del hueco de la escalera,
+    m.rect_altura(0.5, 1.85, arriba, 3.0, 1.53)                # el piso de arriba (paredes hasta el techo)
+    m.escalera_x(3.0, 1.0, 1.85, 9, 0.27, 0.17)
+    m.rect_pared(0.5, 0.95, arriba, 1.0)
+    m.rect_pared(0.5, 1.85, arriba, 1.9)
+    if pared_abajo is not None:
+        m.rect_pared(pared_abajo - 0.05, 1.0, pared_abajo, 1.85)
+    if pared_arriba is not None:                     # pared enfrente, arriba (ver que para al llegar)
+        m.rect_pared(pared_arriba, 0.0, pared_arriba + 0.05, 3.0)
+    return m
+
+
 def cuarto_simple():
     m = Mundo(8.0, 6.0)
     m.rect_pared(3.0, 2.0, 3.6, 2.6)
@@ -101,7 +150,7 @@ def cuarto_simple():
 
 class RobotSim(Robot):
     def __init__(self, mundo, x=1.5, y=1.5, yaw=0.3, tiempo_real=False, deriva=0.0, odom_origen=None,
-                 ruido_real=False):
+                 ruido_real=False, l1_real=False, piso_brillante=False):
         self.m = mundo
         mundo.preparar()
         self.x, self.y, self.yaw = x, y, yaw
@@ -126,6 +175,13 @@ class RobotSim(Robot):
         self.historial = []
         self.personas = []           # (x0, y0, x1, y1, v): van y vienen
         self.ruido_real = ruido_real   # como el L1 real: ve sus patas/cabeza y "rebotes" en piso brillante
+        # geometria del L1 de verdad (URDF del Go2): 4.7 cm DEBAJO del centro del cuerpo (a ~25 cm del
+        # suelo), boca abajo e inclinado 15 grados: delante ve hasta 15 grados por encima del horizonte,
+        # detras del hocico no ve (el cuerpo lo tapa) y una huella mas alta que el no la ve (solo su cara)
+        self.l1_real = l1_real
+        # piso de ceramica brillante (como la casa, foto del 20-oct): de lejos (rasante) el piso casi
+        # no devuelve, y todo lo que hay arriba se ve ESPEJADO debajo del piso (mismo x, y)
+        self.piso_brillante = piso_brillante
         self._marcadas = None
 
     # ---- tiempo
@@ -198,9 +254,10 @@ class RobotSim(Robot):
             self.yaw = math.atan2(math.sin(ny_), math.cos(ny_))
         zs = self.m.altura(self.x, self.y)
         self.z += min(1.0, h / 0.3) * (zs + 0.30 - self.z)
-        f = self.m.altura(self.x + 0.3 * math.cos(self.yaw), self.y + 0.3 * math.sin(self.yaw))
-        b = self.m.altura(self.x - 0.3 * math.cos(self.yaw), self.y - 0.3 * math.sin(self.yaw))
-        self.pitch = -math.atan2(f - b, 0.6)
+        # pitch del cuerpo: altura de los pies de delante menos la de los de atras (a +-0.19 m)
+        f = self.m.altura(self.x + 0.19 * math.cos(self.yaw), self.y + 0.19 * math.sin(self.yaw))
+        b = self.m.altura(self.x - 0.19 * math.cos(self.yaw), self.y - 0.19 * math.sin(self.yaw))
+        self.pitch = -math.atan2(f - b, 0.38)
         self.historial.append((self.x, self.y))
 
     def _huella(self, x, y, yaw):
@@ -225,9 +282,15 @@ class RobotSim(Robot):
         """Puntos visibles en un radio de 5 m: suelo + paredes, con oclusion."""
         R = 4.0
         # el L1 va en la cabeza: 28 cm adelante y 12 cm arriba del centro del cuerpo
-        sx = self.x + 0.28 * math.cos(self.yaw)
-        sy = self.y + 0.28 * math.sin(self.yaw)
-        sz = self.z + 0.12
+        if self.l1_real:
+            # la cabeza sube/baja con el cuerpo inclinado (pitch < 0 = hocico arriba en este simulador)
+            a = -self.pitch
+            fx_s, z_s = 0.29 * math.cos(a) + 0.047 * math.sin(a), 0.29 * math.sin(a) - 0.047 * math.cos(a)
+        else:
+            fx_s, z_s = 0.28, 0.12
+        sx = self.x + fx_s * math.cos(self.yaw)
+        sy = self.y + fx_s * math.sin(self.yaw)
+        sz = self.z + z_s
         j0, j1 = max(0, int((sx - R) / RES)), min(self.m.W, int((sx + R) / RES))
         i0, i1 = max(0, int((sy - R) / RES)), min(self.m.H, int((sy + R) / RES))
         ii, jj = np.mgrid[i0:i1, j0:j1]
@@ -235,13 +298,15 @@ class RobotSim(Robot):
         px = (jj + 0.5) * RES
         py = (ii + 0.5) * RES
         d = np.hypot(px - sx, py - sy)
-        sel = (d < R) & (d > 0.30)
+        sel = (d < R) & (d > (0.10 if self.l1_real else 0.30))      # el L1 ve desde ~5-10 cm
         ii, jj, px, py, d = ii[sel], jj[sel], px[sel], py[sel], d[sel]
         pared = self.m.pared[ii, jj]
         pz = self.m.suelo[ii, jj]
-        # oclusion: muestreo a lo largo del rayo
-        n = 24
-        ts = np.linspace(0.08, 0.97, n)
+        # oclusion: muestreo a lo largo del rayo cada <= 4 cm (menos que la pared mas delgada, 5 cm).
+        # Antes eran 24 muestras por rayo (cada 15 cm en un rayo de 4 m): el lidar simulado veia A
+        # TRAVES de paredes y puertas, y esos rayos borraban paredes del mapa de costos
+        n = int(np.ceil(R / 0.04))
+        ts = np.linspace(0.08 / R, 1.0 - 0.03 / R, n)
         visible = np.ones(len(px), bool)
         for t in ts:
             qx = sx + t * (px - sx)
@@ -266,6 +331,11 @@ class RobotSim(Robot):
         z_top = self.m.suelo[ii[pv], jj[pv]] + 1.0
         for f in np.linspace(0.08, 1.0, 7):
             pts.append(np.c_[px[pv], py[pv], z_base + f * (z_top - z_base)])
+        if self.l1_real:
+            pts[0] = pts[0][pts[0][:, 2] < sz - 0.01]         # una huella mas alta que el L1 no se ve
+            pts.extend(self._caras_l1(sx, sy, sz, ii, jj, px, py, pz))
+            xyz = np.concatenate(pts).astype(np.float32)
+            return self._terminar(xyz, sx, sy, sz)
         # caras verticales de los desniveles (escalones, borde del entrepiso)
         zl = self.m.zmin3[ii, jj]
         salto = sv & (pz - zl > 0.08)
@@ -281,6 +351,53 @@ class RobotSim(Robot):
                 zz = pz[pie] + f * np.minimum(zh[pie] - pz[pie], 1.0)
                 pts.append(np.c_[px[pie], py[pie], zz])
         xyz = np.concatenate(pts).astype(np.float32)
+        return self._terminar(xyz, sx, sy, sz)
+
+    def _visible(self, sx, sy, sz, px, py, pz, margen):
+        """Rayo del lidar al punto sin cortar el terreno ni paredes (hasta 'margen' m antes de el)."""
+        d = np.hypot(px - sx, py - sy)
+        fin = np.clip(1.0 - margen / np.maximum(d, 1e-6), 0.0, 1.0)
+        vis = np.ones(len(px), bool)
+        n = 100
+        for k in range(n):
+            t = fin * (k + 0.5) / n
+            qx, qy = sx + t * (px - sx), sy + t * (py - sy)
+            qi = np.clip((qy / RES).astype(int), 0, self.m.H - 1)
+            qj = np.clip((qx / RES).astype(int), 0, self.m.W - 1)
+            z_rayo = sz + t * (pz - sz)
+            vis &= ~(self.m.pared[qi, qj] | (self.m.suelo[qi, qj] > z_rayo + 0.01))
+        return vis
+
+    def _caras_l1(self, sx, sy, sz, ii, jj, px, py, pz):
+        """Caras verticales de los escalones, cada punto con su propia oclusion (la huella de encima
+        puede no verse y la cara si)."""
+        out = []
+        zl, zh = self.m.zmin3[ii, jj], self.m.zmax3[ii, jj]
+        for base, top, sel in ((zl, pz, pz - zl > 0.08), (pz, np.minimum(zh, pz + 1.0), zh - pz > 0.08)):
+            if not sel.any():
+                continue
+            for f in np.arange(0.1, 1.0, 0.15):
+                zz = base[sel] + f * (top[sel] - base[sel])
+                v = self._visible(sx, sy, sz, px[sel], py[sel], zz, 0.04)
+                out.append(np.c_[px[sel][v], py[sel][v], zz[v]])
+        return out
+
+    def _terminar(self, xyz, sx, sy, sz):
+        if self.l1_real and len(xyz):
+            # campo de vision del L1 (boca abajo, inclinado 15 grados) y el cuerpo tapando atras
+            # (en el marco del cuerpo: inclinado en la escalera, el campo de vision se inclina con el)
+            c, s = math.cos(self.yaw), math.sin(self.yaw)
+            dx = c * (xyz[:, 0] - sx) + s * (xyz[:, 1] - sy)
+            dy = -s * (xyz[:, 0] - sx) + c * (xyz[:, 1] - sy)
+            dz = xyz[:, 2] - sz
+            a = -self.pitch
+            dx, dz = dx * math.cos(a) + dz * math.sin(a), -dx * math.sin(a) + dz * math.cos(a)
+            ok = (dz <= 0.27 * dx) & ~((dx < 0.05) & (np.abs(dy) < 0.30))
+            xyz = xyz[ok]
+        if self.m.mesas:
+            xyz = np.concatenate([xyz, self._mesas(sx, sy, sz)]).astype(np.float32)
+        if self.piso_brillante and len(xyz):
+            xyz = self._brillo(xyz, sx, sy, sz)
         xyz += self.rng.normal(0, 0.01, xyz.shape).astype(np.float32)
         if self.ruido_real:
             xyz = np.concatenate([xyz, self._ruido_real(xyz)]).astype(np.float32)
@@ -292,6 +409,42 @@ class RobotSim(Robot):
         x, y = self._a_odom(xyz[:, 0], xyz[:, 1])
         xyz[:, 0], xyz[:, 1] = x, y
         return xyz
+
+    def _mesas(self, sx, sy, sz):
+        """Cara de abajo de los tableros visibles (dentro del campo de vision del L1, sin oclusion)."""
+        out = []
+        for x0, y0, x1, y1, z in self.m.mesas:
+            gx, gy = np.meshgrid(np.arange(x0, x1, 0.04), np.arange(y0, y1, 0.04))
+            p = np.c_[gx.ravel(), gy.ravel(), np.full(gx.size, z + self.m.altura(x0, y0))]
+            out.append(p)
+        p = np.concatenate(out) if out else np.zeros((0, 3))
+        if self.l1_real and len(p):
+            c, s = math.cos(self.yaw), math.sin(self.yaw)
+            dx = c * (p[:, 0] - sx) + s * (p[:, 1] - sy)
+            p = p[(p[:, 2] - sz <= 0.27 * dx) & (dx > 0.05)]
+        return p
+
+    def _brillo(self, xyz, sx, sy, sz):
+        """Piso brillante: el suelo (al nivel del perro) devuelve cada vez menos con la distancia
+        (casi nada pasado 1.6 m) y lo que hay arriba aparece espejado abajo, si el rayo rebota en
+        un pedazo de ese mismo piso."""
+        g = self.m.altura(self.x, self.y)
+        r = np.hypot(xyz[:, 0] - sx, xyz[:, 1] - sy)
+        h = xyz[:, 2] - g
+        suelo = np.abs(h) < 0.03
+        p_ve = np.clip(1.0 - (r - 0.8) / 0.8, 0.05, 1.0)
+        queda = ~suelo | (self.rng.random(len(xyz)) < p_ve)
+        arriba = (h > 0.03) & (self.rng.random(len(xyz)) < 0.6)
+        esp = xyz[arriba].copy()
+        hs = sz - g
+        t = hs / np.maximum(hs + (esp[:, 2] - g), 1e-3)                # donde rebota el rayo en el piso
+        rx, ry = sx + t * (esp[:, 0] - sx), sy + t * (esp[:, 1] - sy)
+        ri = np.clip((ry / RES).astype(int), 0, self.m.H - 1)
+        rj = np.clip((rx / RES).astype(int), 0, self.m.W - 1)
+        en_piso = (np.abs(self.m.suelo[ri, rj] - g) < 0.02) & ~self.m.pared[ri, rj]
+        esp = esp[en_piso]
+        esp[:, 2] = g - (esp[:, 2] - g)
+        return np.concatenate([xyz[queda], esp])
 
     def _ruido_real(self, xyz):
         """Lo que el L1 real devuelve ademas del mundo:

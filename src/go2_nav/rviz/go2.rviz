@@ -37,32 +37,45 @@ Visualization Manager:
       Topic:
         Value: /go2/fronteras
     - Class: rviz_default_plugins/Map
-      Name: Costos globales
-      Enabled: true
+      Name: Costos globales (prenderlo para ver por donde planifica)
+      Enabled: false
       Topic:
         Value: /global_costmap/costmap
       Color Scheme: costmap
       Alpha: 0.3
     - Class: rviz_default_plugins/Map
-      Name: Costos locales
-      Enabled: true
+      Name: Costos locales (sombreado, apagado; Nav2 lo arma con los obstaculos naranjas)
+      Enabled: false
       Topic:
         Value: /local_costmap/costmap
       Color Scheme: costmap
-      Alpha: 0.5
+      Alpha: 0.4
     - Class: rviz_default_plugins/PointCloud2
-      Name: Obstaculos (limpios)
+      Name: Nube del lidar (color = altura)
+      Enabled: true
+      Topic:
+        Value: /go2/nube_sin_fantasmas
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 2
+      Alpha: 0.7
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Autocompute Value Bounds: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Obstaculos (lo UNICO que usa Nav2)
       Enabled: true
       Topic:
         Value: /go2/obstaculos
         Reliability Policy: Best Effort
-      Style: Points
-      Size (Pixels): 3
+      Style: Flat Squares
+      Size (m): 0.05
       Color Transformer: FlatColor
-      Color: 255; 255; 255
+      Color: 255; 110; 0
     - Class: rviz_default_plugins/PointCloud2
       Name: FANTASMAS ya eliminados (rojo, NO cuentan)
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /go2/fantasmas
         Reliability Policy: Best Effort
@@ -96,21 +109,32 @@ Visualization Manager:
         Value: /plan
       Color: 0; 255; 0
       Line Style: Lines
+    - Class: rviz_default_plugins/RobotModel
+      Name: Perro (modelo 3D, las patas se mueven)
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Visual Enabled: true
+      Collision Enabled: false
+      Alpha: 1
     - Class: rviz_default_plugins/Polygon
       Name: Huella del perro
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /local_costmap/published_footprint
       Color: 255; 200; 0
     - Class: rviz_default_plugins/Polygon
       Name: Zona frente (frena)
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /zona_frente
       Color: 255; 120; 0
     - Class: rviz_default_plugins/TF
       Name: TF
-      Enabled: true
+      Enabled: false
       Show Names: true
     - Class: rviz_default_plugins/MarkerArray
       Name: Lo que ve la camara (etiquetas)

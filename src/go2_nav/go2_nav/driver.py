@@ -30,8 +30,9 @@ from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Header
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool, Float32, String
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -42,18 +43,24 @@ except ImportError:
     CollisionMonitorState = None
 from unitree_go.msg import LowState, SportModeState
 
+from . import ajustes
+
 API_MOVE = 1008
 API_STOPMOVE = 1003
 API_STANDUP = 1004
 API_BALANCESTAND = 1002
 API_FREEWALK = 2045
+API_BODYHEIGHT = 1013          # altura del cuerpo RELATIVA a la normal, {"data": m}, de -0.18 a +0.03
+ALTURA_MIN, ALTURA_MAX = -0.18, 0.03
 EVITA_SET, EVITA_GET = 1001, 1002          # servicio "obstacles_avoid" de Unitree
+# orden de los motores del Go2 en LowState.motor_state (unitree_sdk2) = nombres del urdf/go2.urdf
+JUNTAS = ["%s_%s_joint" % (pata, j) for pata in ("FR", "FL", "RR", "RL") for j in ("hip", "thigh", "calf")]
 
 
 class Driver(Node):
     def __init__(self):
         super().__init__("go2_driver")
-        p = self.declare_parameter
+        p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
         self.vx_max = p("vx_max", 0.8).value
         self.vy_max = p("vy_max", 0.4).value
         self.wz_max = p("wz_max", 1.2).value
@@ -68,6 +75,18 @@ class Driver(Node):
         # espacio libre en esa direccion, sube a esta velocidad
         self.v_efectiva = p("v_efectiva", 0.20).value
         self.w_efectiva = p("w_efectiva", 0.40).value
+        # giro en el sitio MAS CHICO que esto = "ya casi estoy alineado": se para en vez de subirlo
+        # a w_efectiva. Antes cualquier correccion chica de Nav2 se volvia 0.40 rad/s, el perro se
+        # pasaba de la linea, Nav2 corregia al otro lado y asi sin fin (zigzag)
+        self.w_quieto = p("w_quieto", 0.20).value
+        # EMPUJE para Nav2: si el perro avanza menos del 40 % de lo que se le manda (pisa en el sitio),
+        # la orden sube de a poco (x1.15 cada 0.6 s, giro incluido: misma curva) hasta v_empuje_max,
+        # SOLO con espacio libre en esa direccion y sin el monitor de choques frenando
+        self.v_empuje_max = p("v_empuje_max", 0.45).value
+        self.emp_k, self.emp_t, self.emp_p, self.emp_v = 1.0, 0.0, None, 0.0
+        self.pose_xy = None
+        # la compensacion de giro (go2 calibrar_mov) nunca pide mas de esto x lo que quiere Nav2
+        self.comp_w_max = p("compensacion_giro_max", 1.5).value
         self.holguras = {}
         self.t_holg = 0.0
         # respuesta REAL del perro a las ordenes (go2 calibrar_mov): se compensa
@@ -78,6 +97,8 @@ class Driver(Node):
 
         self.tf = TransformBroadcaster(self)
         self.pub_odom = self.create_publisher(Odometry, "odom", 10)
+        self.pub_patas = self.create_publisher(JointState, "joint_states", 10)
+        self.t_patas = 0.0
         self.pub_req = self.create_publisher(Request, "/api/sport/request", 10)
         self.pub_bat = self.create_publisher(Float32, "/go2/bateria", 1)
         self.pub_rem = self.create_publisher(Bool, "/go2/control_remoto", 1)
@@ -93,6 +114,13 @@ class Driver(Node):
         self.create_subscription(Twist, "cmd_vel_prioridad", self.cb_cmd_prio, 10)
         self.create_subscription(String, "/go2/marcha", self.cb_marcha, 10)
         self.create_subscription(Response, "/api/obstacles_avoid/response", self.cb_evita, 10)
+        # altura del cuerpo en la escalera: bajando en reversa el L1 (bajo el menton) rozaba el borde
+        # del escalon de arriba cuando el perro se agachaba. Se sube el cuerpo con BodyHeight y se
+        # comprueba con la respuesta del perro y la altura medida (SportModeState.body_height)
+        self.altura_esc = p("altura_escaleras", 0.03).value
+        self.create_subscription(Response, "/api/sport/response", self.cb_sport_resp, 10)
+        self.altura_pedida, self.altura_resp, self.altura_info = 0.0, None, ""
+        self.rid_altura = None
         self.create_subscription(String, "/go2/limpiador_estado", self.cb_holg, 1)
         # sin nubes del lidar Nav2 maneja a ciegas (y el TF del mapa se atrasa): pausa
         self.create_subscription(Header, "/go2/lidar_vivo", self.cb_vivo, 5)
@@ -127,6 +155,7 @@ class Driver(Node):
         self.subidas = 0
         self.create_timer(0.05, self.lazo)          # 20 Hz
         self.create_timer(1.0, self.diag)
+        self.create_timer(0.5, self.patas_de_pie)
         self.create_timer(2.0, self.prender_lidar)
         self.create_timer(3.0, self.revisar_evitacion)
         self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odom con hora local")
@@ -149,6 +178,7 @@ class Driver(Node):
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = p.x, p.y, p.z
         t.transform.rotation = m.pose.pose.orientation
         self.tf.sendTransform(t)
+        self.pose_xy = (p.x, p.y)
         self.n_odom += 1
         self.t_odom = time.monotonic()
 
@@ -158,6 +188,11 @@ class Driver(Node):
 
     def cb_low(self, m):
         self.soc = int(m.bms_state.soc)
+        # angulos de los 12 motores -> /joint_states: el modelo del perro en RViz mueve las patas
+        q = [float(m.motor_state[i].q) for i in range(12)]
+        if any(abs(v) > 1e-3 for v in q) and time.monotonic() - self.t_patas > 0.05:
+            self.t_patas = time.monotonic()
+            self.publicar_patas(q)
         try:
             wr = bytes(bytearray(m.wireless_remote))
             lx, rx, ry, _l2, ly = struct.unpack_from("<5f", wr, 4)
@@ -165,6 +200,17 @@ class Driver(Node):
                 self.t_remoto = time.monotonic()
         except Exception:
             pass
+
+    def publicar_patas(self, q):
+        js = JointState()
+        js.header.stamp = self.get_clock().now().to_msg()
+        js.name, js.position = list(JUNTAS), list(q)
+        self.pub_patas.publish(js)
+
+    def patas_de_pie(self):
+        """Sin angulos de los motores (simulador, o todavia no llegan): el perro de pie."""
+        if time.monotonic() - self.t_patas > 1.0:
+            self.publicar_patas([0.0, 0.8, -1.5] * 4)
 
     def cb_cmd(self, m):
         self.cmd = (m.linear.x, m.linear.y, m.angular.z)
@@ -231,7 +277,8 @@ class Driver(Node):
             k = min(self.vx_max, self.inversa(self.curvas["v"], v)) / v
             vx, vy = vx * k, vy * k
         if abs(wz) >= self.min_w:
-            wz = math.copysign(min(self.wz_max, self.inversa(self.curvas["w"], abs(wz))), wz)
+            w = min(self.inversa(self.curvas["w"], abs(wz)), self.comp_w_max * abs(wz), self.wz_max)
+            wz = math.copysign(w, wz)
         return vx, vy, wz
 
     def efectiva(self, vx, vy, wz):
@@ -250,12 +297,44 @@ class Driver(Node):
             # y que no vaya rozando: los costados con algo de aire
             libre = libre and all(H.get(k) is None or H.get(k) >= 0.10 for k in costados)
             if libre:
-                k = self.v_efectiva / v
-                vx, vy = vx * k, vy * k
-                self.subidas += 1
-        elif v < self.min_v and self.min_w <= abs(wz) < self.w_efectiva:
-            wz = math.copysign(self.w_efectiva, wz)       # giro en el sitio
+                # el giro se escala IGUAL que el avance: misma curva que calculo Nav2, solo mas
+                # rapido. Antes subia solo el avance (0.08 -> 0.20 m/s con el mismo giro): el arco
+                # salia 2.5 veces mas abierto y la esquina del perro cortaba el marco de la puerta
+                k = min(self.v_efectiva / v, self.wz_max / abs(wz)) if abs(wz) > 1e-3 else self.v_efectiva / v
+                if k > 1.0:
+                    vx, vy, wz = vx * k, vy * k, wz * k
+                    self.subidas += 1
+        elif v < self.min_v and abs(wz) < self.w_efectiva:
+            # giro en el sitio: una correccion minima se ignora (casi alineado: mejor parar que
+            # pasarse); una correccion real se sube al minimo con el que el Go2 si gira
+            wz = 0.0 if abs(wz) < self.w_quieto else math.copysign(self.w_efectiva, wz)
         return vx, vy, wz
+
+    def empuje(self, vx, vy, wz):
+        """Si el perro no avanza lo que se le pide, subir la orden de a poco (ver __init__)."""
+        v = math.hypot(vx, vy)
+        ahora = time.monotonic()
+        H = self.holguras if ahora - self.t_holg < 2.0 else None
+        if v < self.min_v or self.en_escalera or self.cm_accion != 0 or H is None or self.pose_xy is None:
+            self.emp_k, self.emp_p = 1.0, None
+            return vx, vy, wz
+        lado = ("adelante" if vx > 0 else "atras") if abs(vx) >= abs(vy) else ("izq" if vy > 0 else "der")
+        d = H.get(lado)
+        if d is None or d < 0.35:                 # sin espacio medido en esa direccion: nunca empujar
+            self.emp_k, self.emp_p = 1.0, None
+            return vx, vy, wz
+        if self.emp_p is None:
+            self.emp_t, self.emp_p = ahora, self.pose_xy
+        elif ahora - self.emp_t >= 0.6:
+            real = math.hypot(self.pose_xy[0] - self.emp_p[0], self.pose_xy[1] - self.emp_p[1]) / (ahora - self.emp_t)
+            if real < 0.4 * self.emp_v:
+                self.emp_k = min(self.emp_k * 1.15, self.v_empuje_max / v)
+            elif real > 0.8 * self.emp_v:
+                self.emp_k = max(1.0, self.emp_k * 0.95)          # ya avanza: vuelve de a poco
+            self.emp_t, self.emp_p = ahora, self.pose_xy
+        k = max(1.0, min(self.emp_k, self.v_empuje_max / v, self.wz_max / abs(wz) if abs(wz) > 1e-3 else 9.0))
+        self.emp_v = v * k
+        return vx * k, vy * k, wz * k
 
     def cb_evita(self, m):
         if m.header.identity.api_id != EVITA_GET or m.header.status.code != 0:
@@ -275,17 +354,55 @@ class Driver(Node):
 
     def cb_marcha(self, m):
         """Marcha para escaleras (la pide go2_escaleras). Firmware >= 1.1.7 (MCF): FreeWalk es la
-        marcha agil que sube y baja escalones."""
+        marcha agil que sube y baja escalones. Ademas: 'altura X' (m, relativa) para probar."""
         if m.data == "escaleras_off":
             self.en_escalera = False
+            if self.altura_pedida:
+                self.poner_altura(0.0)
         if m.data == "escaleras_on":
             self.en_escalera = True
-            self.get_logger().info("marcha de escaleras: FreeWalk")
+            self.get_logger().info("marcha de escaleras: FreeWalk, cuerpo %+.0f cm" % (100 * self.altura_esc))
             self._req(API_FREEWALK)
+            # despues del cambio de marcha (que puede volver la altura a la normal)
+            threading.Timer(0.6, lambda: self.poner_altura(self.altura_esc)).start()
         elif m.data == "balancear":
             self._req(API_BALANCESTAND)
             if self.marcha_libre:
                 threading.Timer(0.3, lambda: self._req(API_FREEWALK)).start()
+            if self.en_escalera:
+                threading.Timer(0.9, lambda: self.poner_altura(self.altura_esc)).start()
+        elif m.data.startswith("altura"):
+            try:
+                self.poner_altura(float(m.data.split()[1]))
+            except (IndexError, ValueError):
+                pass
+
+    def poner_altura(self, h):
+        """Pide la altura del cuerpo (relativa) y despues de 1.5 s dice si el perro la tomo."""
+        h = max(ALTURA_MIN, min(ALTURA_MAX, float(h)))
+        antes = self.altura
+        self.altura_pedida, self.altura_resp = h, None
+        self.rid_altura = self.rid + 1
+        self._req(API_BODYHEIGHT, {"data": h}, sin_respuesta=False)
+
+        def revisar():
+            ahora = self.altura
+            cambio = (ahora - antes) if (ahora is not None and antes is not None) else None
+            if self.altura_resp is None:
+                r = "el perro no respondio"
+            elif self.altura_resp == 0:
+                r = "el perro la ACEPTO"
+            else:
+                r = "el perro la RECHAZO (codigo %s: este firmware/marcha no la permite)" % self.altura_resp
+            self.altura_info = "altura %+.0f cm: %s%s" % (
+                100 * h, r, "" if cambio is None else ", la altura medida cambio %+.1f cm (%.2f -> %.2f m)"
+                % (100 * cambio, antes, ahora))
+            self.get_logger().info(self.altura_info)
+        threading.Timer(1.5, revisar).start()
+
+    def cb_sport_resp(self, m):
+        if m.header.identity.api_id == API_BODYHEIGHT and m.header.identity.id == self.rid_altura:
+            self.altura_resp = int(m.header.status.code)
 
     # ------------------------------------------------------------------ salida
     def _req(self, api, parametro=None, sin_respuesta=True, pub=None):
@@ -328,6 +445,9 @@ class Driver(Node):
         if nav and (vx or vy or wz):
             # minimo para Nav2 (la escalera, la calibracion y el escape mandan su velocidad)
             vx, vy, wz = self.efectiva(vx, vy, wz)
+            vx, vy, wz = self.empuje(vx, vy, wz)
+        else:
+            self.emp_k, self.emp_p = 1.0, None
         self.ultima_orden = (vx, vy, wz)
         if abs(vx) > 1e-3 or abs(vy) > 1e-3 or abs(wz) > 1e-3:
             self._req(API_MOVE, {"x": vx, "y": vy, "z": wz})
@@ -353,9 +473,9 @@ class Driver(Node):
              "altura": self.altura, "modo": self.modo, "bateria": self.soc, "move_hz": self.envios,
              "remoto": self.remoto_activo(), "evitacion_unitree": self.evita,
              "orden": [round(v, 2) for v in self.ultima_orden], "ordenes_minimas": self.muertas,
-             "subidas": self.subidas, "compensado": self.curvas is not None,
+             "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
-             "pausas_lidar": self.pausas_lidar}
+             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info}
         self.n_odom = 0
         self.envios = 0
         self.muertas = 0

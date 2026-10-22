@@ -7,7 +7,8 @@ El L1 simulado tiene los defectos medidos en el perro real: ve sus patas y cabez
 altura de cerca, reflejos del piso brillante bajo el suelo y fantasmas pegados al cuerpo.
 
 Mundos: casa (2 cuartos + pasillo + puerta), pasillo (cuarto con cama y pasillo angosto al lado),
-dos_puertas (dos cuartos unidos por dos puertas), simple.
+dos_puertas (dos cuartos unidos por dos puertas), puerta (como la casa real: puerta de 72 cm con
+la hoja abierta, pasillo y escalera que baja), simple.
 """
 import json
 import os
@@ -52,12 +53,29 @@ def mundo_dos_puertas():
 
 
 def elegir(nombre):
+    if nombre == "puerta":
+        return M.mundo_puerta()
     if nombre == "pasillo":
         return mundo_pasillo()
     if nombre == "dos_puertas":
         return mundo_dos_puertas()
     if nombre == "simple":
         return M.cuarto_simple(), (1.5, 1.5, 0.3)
+    if nombre == "brillante":
+        # como la foto del 20-oct: piso de ceramica brillante, una mesa delante, la puerta al costado
+        m = M.Mundo(8.0, 6.0)
+        m.mesa(3.0, 2.2, 4.2, 3.0, 0.72)
+        for px, py in ((3.05, 2.25), (4.11, 2.25), (3.05, 2.91), (4.11, 2.91)):
+            m.rect_pared(px, py, px + 0.04, py + 0.04)                 # patas de la mesa
+        m.rect_pared(5.5, 0.0, 5.6, 6.0)                               # pared de enfrente
+        m.rect_pared(0.0, 4.2, 5.5, 4.3)                               # pared con la puerta
+        m.rect_libre(1.8, 4.2, 2.6, 4.3)                               # la puerta (80 cm)
+        m.rect_pared(1.75, 3.5, 1.8, 4.2)                              # la hoja abierta
+        return m, (1.2, 2.6, 0.0)
+    if nombre == "escalera":
+        # la escalera angosta de la casa: el perro abajo, con el hocico a 13 cm del primer escalon
+        # (y una pared 90 cm detras del pie de la escalera, para ver que la bajada para a tiempo)
+        return M.escalera_pasillo(pared_abajo=2.1), (3.0 - 0.36 - 0.13, 1.425, 0.0)
     return M.casa_demo(), (1.5, 1.5, 0.3)
 
 
@@ -69,11 +87,16 @@ class PerroSim(Node):
         # fantasmas pegados al cuerpo: el perro real NO los tiene una vez corregido el error de
         # altura del L1 (grabacion del 18-oct). Se pueden activar para probar 'go2 calibrar'.
         fantasmas = self.declare_parameter("fantasmas", False).value
+        # el L1 real da ~2000 puntos por nube (21600/s); el lidar simulado ve TODO lo visible
+        # (decenas de miles). 0 = todo; 2500 = parecido al L1 (para probar "de verdad")
+        self.puntos_nube = int(self.declare_parameter("puntos_por_nube", 0).value)
         mundo, (x, y, yaw) = elegir(nombre)
         inicio = self.declare_parameter("inicio", "").value      # "x,y,yaw" para empezar en otro lado
         if inicio:
             x, y, yaw = [float(v) for v in inicio.split(",")]
-        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido)
+        # en la escalera, el lidar como el L1 de verdad (mas bajo, no ve atras ni huellas mas altas que el)
+        self.r = M.RobotSim(mundo, x=x, y=y, yaw=yaw, ruido_real=ruido, l1_real=nombre in ("escalera", "brillante"),
+                            piso_brillante=(nombre == "brillante"))
         self.r.fantasmas = bool(fantasmas)
         self.t0 = time.monotonic()
         sd = qos_profile_sensor_data
@@ -94,7 +117,12 @@ class PerroSim(Node):
             self.respuesta = tuple(float(v) for v in os.environ.get("GO2_SIM_RESPUESTA", "1,0,1").split(","))
         except ValueError:
             self.respuesta = (1.0, 0.0, 1.0)
-        self.get_logger().info("Go2 simulado en el mundo '%s' (ruido real: %s)" % (nombre, ruido))
+        # obstaculos FALSOS de un instante, como los del L1 real (rebotes, vidrios, polvo): GO2_SIM_MOTAS
+        # por segundo, cada uno 3-6 puntos juntos a la altura de un obstaculo que duran 0.2-0.5 s. Con
+        # esto el mapa de costos se llenaba de puntitos como en la casa (pruebas/prueba_puerta.py)
+        self.motas = float(os.environ.get("GO2_SIM_MOTAS", "0") or 0)
+        self.motas_vivas, self.t_motas = [], None
+        self.get_logger().info("Go2 simulado en el mundo '%s' (ruido real: %s, motas/s: %s)" % (nombre, ruido, self.motas))
 
     def stamp_perro(self):
         t = time.time() + DESFASE_RELOJ
@@ -129,7 +157,27 @@ class PerroSim(Node):
     def paso(self):
         self.r._fisica_hasta(time.monotonic() - self.t0)
         for _t, xyz in self.r.nubes_nuevas():
+            if 0 < self.puntos_nube < len(xyz):
+                xyz = xyz[self.r.rng.choice(len(xyz), self.puntos_nube, replace=False)]
+            if self.motas > 0:
+                xyz = np.concatenate([xyz, self.puntos_motas()]).astype(np.float32)
             self.pub_nube.publish(crear_nube(xyz, "odom", self.stamp_perro()))
+
+    def puntos_motas(self):
+        r, t = self.r.rng, time.monotonic()
+        dt = 0.0 if self.t_motas is None else t - self.t_motas
+        self.t_motas = t
+        x, y, _z, yaw = self.r.pose()[:4]
+        g = self.r.m.altura(self.r.x, self.r.y)
+        self.motas_vivas = [m for m in self.motas_vivas if m[3] > t]
+        for _ in range(r.poisson(self.motas * dt)):
+            # (tambien donde el L1 real no ve, mas alto: peor que la realidad, a proposito)
+            a, d = yaw + r.uniform(-1.6, 1.6), r.uniform(0.6, 3.0)
+            self.motas_vivas.append((x + d * math.cos(a), y + d * math.sin(a), g + r.uniform(0.15, 0.45),
+                                     t + r.uniform(0.2, 0.5)))
+        pts = [np.c_[mx + r.normal(0, 0.03, k), my + r.normal(0, 0.03, k), mz + r.normal(0, 0.02, k)]
+               for mx, my, mz, _ in self.motas_vivas for k in [int(r.integers(3, 7))]]
+        return np.concatenate(pts) if pts else np.zeros((0, 3))
 
     def pub_estado(self):
         x, y, z, yaw, pitch, roll, _ = self.r.pose()
@@ -150,6 +198,7 @@ class PerroSim(Node):
         self.pub_odom.publish(o)
         s = SportModeState()
         s.body_height = 0.32
+        s.imu_state.rpy = [float(roll), float(pitch), float(yaw)]
         s.mode = 1
         self.pub_sport.publish(s)
 

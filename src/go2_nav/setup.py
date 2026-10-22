@@ -5,7 +5,7 @@ from setuptools import setup
 paquete = "go2_nav"
 setup(
     name=paquete,
-    version="1.3.0",
+    version="1.4.0",
     packages=[paquete, paquete + ".nucleo"],
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + paquete]),
@@ -13,6 +13,8 @@ setup(
         ("share/" + paquete + "/launch", glob("launch/*.py")),
         ("share/" + paquete + "/config", glob("config/*")),
         ("share/" + paquete + "/rviz", glob("rviz/*")),
+        ("share/" + paquete + "/urdf", glob("urdf/*")),
+        ("share/" + paquete + "/meshes", glob("meshes/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -25,7 +27,7 @@ setup(
         "limpiador = go2_nav.limpiador:main",
         "gestor = go2_nav.gestor:main",
         "escaleras = go2_nav.escaleras_nodo:main",
-            "vision = go2_nav.vision:main",
+        "vision = go2_nav.vision:main",
         "perro_sim = go2_nav.perro_sim:main",
         "go2 = go2_nav.cli:main",
     ]},

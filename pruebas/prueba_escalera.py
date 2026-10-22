@@ -2,7 +2,7 @@
 
     python3 prueba_escalera.py
 """
-import json, math, os, signal, subprocess, sys, time
+import json, os, signal, subprocess, time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String

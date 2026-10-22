@@ -1,98 +1,36 @@
-"""Configuracion de go2nav.
+"""Valores por defecto del nucleo (escaleras y guardian). go2_escaleras los expone como
+parametros ROS del mismo nombre (ros2 param / launch)."""
 
-Los valores por defecto estan aqui. Para cambiarlos sin tocar el codigo, crea
-/unitree/dev/go2nav/datos/config.json (o la ruta de GO2NAV_DATOS) con solo las claves
-que quieras cambiar, por ejemplo:  {"v_max": 0.5, "escaleras": "al_final"}
-"""
-import json
-import os
+# huella de Nav2 (config/nav2.yaml): la forma del perro, cabeza mas angosta (m, marco del cuerpo)
+HUELLA = [(0.40, 0.10), (0.30, 0.16), (-0.37, 0.16), (-0.37, -0.16), (0.30, -0.16), (0.40, -0.10)]
 
-DATOS = os.environ.get("GO2NAV_DATOS", os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datos"))
+
+def en_huella(fx, fy, margen=0.0):
+    """(fx, fy) dentro de la huella (+ margen), en el marco del cuerpo. Acepta escalares."""
+    dentro = True
+    n = len(HUELLA)
+    for i in range(n):                      # poligono convexo: del lado de adentro de cada arista
+        (x0, y0), (x1, y1) = HUELLA[i], HUELLA[(i + 1) % n]
+        ex, ey = x1 - x0, y1 - y0
+        L = (ex * ex + ey * ey) ** 0.5
+        dentro = dentro & (((fx - x0) * ey - (fy - y0) * ex) / L <= margen)
+    return dentro
+
 
 DEFECTO = {
-    # --- comunicacion con el perro (DDS interno) ---
-    "dds_interfaz": "eth0",            # interfaz donde hablan los servicios de Unitree
-    "topico_nube": "rt/utlidar/cloud_deskewed",
-    "topico_odom": "rt/utlidar/robot_odom",     # odometria lidar-inercial (mejor que patas)
-    # versiones "lf" (~20 Hz): las normales van a 266/440 Hz y decodificarlas en Python
-    # se come la CPU del perro (el lazo de control se vuelve lento y gira 8x mas despacio)
-    "topico_estado": "rt/lf/sportmodestate",    # respaldo de pose + IMU + modo
-    "topico_lowstate": "rt/lf/lowstate",        # bateria y control remoto
-    "firmware": "auto",                # auto | legacy (<=1.1.6, modo AI) | mcf (>=1.1.7)
-
-    # --- movimiento ---
-    "v_max": 0.60,                     # m/s en recta despejada
-    "v_explorar": 0.50,                # m/s mientras mapea (el mapa sale mejor un poco mas lento)
-    "w_max": 1.0,                      # rad/s
-    "w_min": 0.55,                     # rad/s: el Go2 no gira en el sitio con menos que esto
-    "girar_si": 45.0,                  # grados de error de rumbo para girar en el sitio
-    "lookahead": 0.55,                 # m (persecucion pura)
-    "parar_a": 0.15,                   # m desde el hocico: obstaculo -> alto total
-    "frenar_desde": 0.90,              # m desde el hocico: empieza a bajar la velocidad
-
-    # --- mapa ---
-    "celda": 0.05,                     # m
-    "obst_min": 0.10,                  # m sobre el suelo: mas bajo se pisa
-    "obst_max": 0.60,                  # m sobre el suelo: mas alto el perro pasa por debajo
-    "alcance": 6.0,                    # m: puntos mas lejos no entran al mapa (ruido)
-    "radio_robot": 0.25,               # m: el centro del perro no pasa mas cerca de una pared que esto
-    "radio_giro": 0.38,                # m: espacio libre que necesita para girar en el sitio (esquinas del cuerpo)
-    "margen_suave": 0.30,              # m extra con costo (prefiere ir por el medio)
-    "ajuste_scan": True,               # corrige la deriva con scan matching
-    "altura_piso": 1.2,                # m de diferencia para considerar otro piso
-
-    # --- exploracion ---
-    "frontera_min": 6,                 # celdas minimas de una frontera
-    "t_atasco": 8.0,                   # s sin avanzar -> maniobra de rescate
-    "intentos_frontera": 2,            # fallos antes de descartar una frontera
-    "volver_al_terminar": True,        # al terminar el mapeo vuelve al punto de inicio
-
     # --- escaleras ---
-    "escaleras": "inmediato",          # inmediato | al_final | off
     "v_subir": 0.30,                   # m/s subiendo (de frente)
     "v_bajar": 0.15,                   # m/s bajando (SIEMPRE en reversa)
-    "ancho_min_escalera": 0.45,        # m
-
-    # --- seguridad ---
-    "bateria_min": 15,                 # % -> deja de explorar y se queda quieto
-    "control_remoto_pausa": True,      # si mueves el control fisico, go2nav se pausa
-    "sesgo_cerca": [0.14, 0.19],       # correccion de altura del L1 de cerca (ver terreno.corregir_cerca); [0, 0] = sin correccion
-    "t_sensor": 1.5,                   # s sin lidar/odom -> alto
+    # m: mas angosta no se toma sola = el cuerpo (0.31 m) + 5 cm por lado. El lidar mide el ancho en
+    # franjas de 10 cm (0.40 m es lo minimo que puede medir): se compara con +-5 cm de tolerancia
+    "ancho_min_escalera": 0.41,
+    "v_escalera_max": 0.40,            # m/s: hasta aca sube la velocidad si el perro no avanza (EMPUJE)
+    "w_min": 0.55,                     # rad/s: el Go2 no gira en el sitio con menos que esto
+    # m libres alrededor (desde el centro) para girar en el sitio: la punta de la cabeza (0.36 m, angosta)
+    # y las patas (~0.30). Antes 0.38: con la escalera de la casa decia "no hay espacio" teniendolo
+    "radio_giro": 0.35,
+    # --- guardian ---
+    "obst_min": 0.10,                  # m sobre el suelo: mas bajo se pisa (cables, umbrales)
+    "obst_max": 0.60,                  # m sobre el suelo: mas alto el perro pasa por debajo
+    "sesgo_cerca": [0.14, 0.19],       # error de altura del L1 de cerca (ver terreno.corregir_cerca); [0, 0] = sin correccion
 }
-
-
-def cargar():
-    cfg = dict(DEFECTO)
-    ruta = os.path.join(DATOS, "config.json")
-    if os.path.isfile(ruta):
-        try:
-            with open(ruta) as f:
-                extra = json.load(f)
-            desconocidas = [k for k in extra if k not in DEFECTO]
-            cfg.update({k: v for k, v in extra.items() if k in DEFECTO})
-            if desconocidas:
-                print("config.json: claves desconocidas ignoradas: " + ", ".join(desconocidas))
-        except (OSError, ValueError) as e:
-            print("config.json invalido (%s); uso los valores por defecto" % e)
-    return cfg
-
-
-def guardar_clave(clave, valor):
-    """Cambia una clave en config.json (persistente)."""
-    if clave not in DEFECTO:
-        raise KeyError(clave)
-    os.makedirs(DATOS, exist_ok=True)
-    ruta = os.path.join(DATOS, "config.json")
-    datos = {}
-    if os.path.isfile(ruta):
-        try:
-            with open(ruta) as f:
-                datos = json.load(f)
-        except (OSError, ValueError):
-            datos = {}
-    datos[clave] = valor
-    tmp = ruta + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(datos, f, indent=2)
-    os.replace(tmp, ruta)

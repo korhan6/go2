@@ -1,4 +1,6 @@
-"""Utilidades de nubes: PointCloud2 <-> numpy sin dependencias raras (rapido)."""
+"""Utilidades de nubes y poses: PointCloud2 <-> numpy sin dependencias raras (rapido)."""
+import math
+
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
 
@@ -48,12 +50,24 @@ def crear_nube(xyz, frame, stamp):
 
 
 def yaw_de_quat(q):
-    import math
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
+def rpy_de_quat(q):
+    """(yaw, pitch, roll) de un cuaternion ROS."""
+    yaw = yaw_de_quat(q)
+    pitch = math.asin(max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x))))
+    roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+    return yaw, pitch, roll
+
+
+def quat_de_yaw(yaw):
+    """(x, y, z, w) de un giro plano."""
+    return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
 def a_cuerpo(xyz, x, y, yaw):
-    import math
+    """Puntos (odom) -> coordenadas del perro (fx adelante, fy izquierda)."""
     c, s = math.cos(yaw), math.sin(yaw)
     dx = xyz[:, 0] - x
     dy = xyz[:, 1] - y

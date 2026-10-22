@@ -21,7 +21,10 @@ slam_toolbox:
     map_update_interval: 2.0
     resolution: 0.05
     min_laser_range: 0.2
-    max_laser_range: 8.0
+    # IGUAL al alcance del /scan del limpiador (rango_scan = 6 m). Si fuera menor, cada lectura
+    # entre los dos se dibuja como un rayo libre de max_laser_range SIN pared al final (los rayos
+    # largos que salian del mapa)
+    max_laser_range: 6.0
     minimum_time_interval: 0.3
     # el TF map->odom se sella con la hora ACTUAL (no con la del ultimo scan): si el lidar se
     # corta un momento, Nav2 no aborta la ruta con "extrapolation into the future"
@@ -65,4 +68,6 @@ slam_toolbox:
     minimum_distance_penalty: 0.5
     use_response_expansion: true
     min_pass_through: 2
-    occupancy_threshold: 0.1
+    # una celda es pared si el lidar le pega en >= 25 % de las veces que la ve (con 0.1, un
+    # rebote o una persona que paso dejaba puntitos negros en medio del cuarto)
+    occupancy_threshold: 0.25

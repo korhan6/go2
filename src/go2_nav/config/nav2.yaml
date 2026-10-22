@@ -1,9 +1,19 @@
 # Nav2 para el Unitree Go2 (ROS 2 Jazzy/Humble). Base: nav2_bringup/params/nav2_params.yaml (Jazzy)
 #
-# Cuerpo del Go2: 0.70 x 0.31 m. Huella:
-#   - a los LADOS: el cuerpo exacto (+-0.16 m)
-#   - ATRAS: el cuerpo exacto (-0.37 m)
-#   - ADELANTE: +9 cm de margen (0.45 m; el hocico esta a 0.36 m)
+# Cuerpo del Go2: 0.70 x 0.31 m. Huella (nucleo/config.HUELLA):
+#   - a los LADOS: el cuerpo exacto (+-0.16 m, las patas)
+#   - ATRAS: el cuerpo exacto (-0.37 m), esquinas enteras (recortarlas: la esquina trasera rozaba
+#     el marco de la puerta al girar dentro de ella, 3 de 6 sin chocar en vez de 6 de 6)
+#   - ADELANTE: la cabeza, mas angosta que el cuerpo: hasta 0.40 m (el hocico esta a 0.36) y +-0.10
+#     de ancho. Antes era un rectangulo hasta 0.45 m de punta a punta: con el margen, para girar en
+#     el sitio pedia 57 cm libres alrededor y en un pasillo de 1 m "no cabia". Ahora pide ~48 cm.
+#   - y footprint_padding 0.07 en el costmap LOCAL (el que usa el controlador): con el L1 (ralo) la
+#     arista de un marco de puerta queda a veces sin marcar (los rayos rasantes que pasan por la
+#     puerta borran esa celda) y sin margen la esquina del perro la enganchaba al girar saliendo de
+#     la puerta (pruebas/prueba_puerta.py, puerta de 72 cm, meta directa: margen 0 -> 2 de 6 sin
+#     chocar; 0.05 -> 5 de 6; 0.07 -> 6 de 6).
+# collision_monitor = SOLO emergencias: el cuerpo exacto + 2 cm y 0.5 s antes del choque. Lo que se
+# ve de lejos lo esquiva el MPPI (con el margen), no lo frena el monitor.
 # El perro camina de lado y gira en el sitio: controlador MPPI con modelo "Omni" (vx, vy, wz).
 # Asi, si no cabe girando, se desliza de lado o retrocede en vez de quedarse "sin espacio".
 
@@ -54,10 +64,15 @@ controller_server:
       # despues sigue con MPPI. Tambien gira rapido al rumbo final. Ideal para un perro.
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_mppi_controller::MPPIController"
-      angular_dist_threshold: 0.6         # si la ruta va a mas de ~35 grados, primero gira de frente a ella
+      # si la ruta va a mas de ~23 grados, primero gira en el sitio de frente a ella, frenando a
+      # tiempo: el Go2 tarda ~0.3 s en responder, y con 0.9 rad/s y 2.5 rad/s2 se pasaba de la
+      # linea y despues zigzagueaba para volver. closed_loop false: frena segun lo que se le
+      # ORDENO, no segun la odometria (que va atrasada y le hacia creer que giraba mas lento)
+      angular_dist_threshold: 0.4
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.9
-      max_angular_accel: 2.5
+      rotate_to_heading_angular_vel: 0.7
+      max_angular_accel: 1.6
+      closed_loop: false
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
       time_steps: 56
@@ -67,10 +82,10 @@ controller_server:
       ax_min: -2.0
       ay_max: 2.0
       ay_min: -2.0
-      az_max: 3.0
+      az_max: 2.0                         # cambios de giro mas suaves (el perro no los sigue mas rapido)
       vx_std: 0.2
       vy_std: 0.2
-      wz_std: 0.4
+      wz_std: 0.3                         # menos ruido de giro en las muestras: menos zigzag
       vx_max: 0.6
       vx_min: -0.3
       vy_max: 0.35
@@ -158,85 +173,126 @@ local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 10.0
-      publish_frequency: 2.0
+      publish_frequency: 5.0           # RViz ve el costmap local 5 veces por segundo (antes 2: se veia atrasado)
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
       width: 4
       height: 4
       resolution: 0.05
-      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
-      footprint_padding: 0.0
+      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
+      footprint_padding: 0.07          # ver arriba
+      # SOLO lo que ve el lidar (sin las paredes del SLAM): el obstacle_layer se borra bajo la
+      # huella del perro; una capa estatica no, y pegado a un marco la huella misma quedaba "en
+      # choque" -> el MPPI no encontraba ninguna trayectoria ("Optimizer fail to compute path")
+      # y el perro no se movia mas (probado con Nav2 real: pruebas/prueba_puerta.py)
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         footprint_clearing_enabled: True
         combination_method: 1
-        observation_sources: obstaculos
+        # SOLO LA NUBE DE AHORA: barrido = un anillo de 3.3 m alrededor del L1 que solo BORRA (sus rayos
+        # cruzan todo este mapa en cada vuelta); despues se marca lo que go2_limpiador publica ahora en
+        # /go2/obstaculos (con su memoria de lo que el L1 dejo de ver). Antes el mapa guardaba cada marca
+        # hasta que un rayo del L1 la cruzara: con el L1 ralo, un rebote de un instante quedaba para
+        # siempre, inflado, y el piso se llenaba de puntitos y sombreado (casa, 20-oct). Con el borrado
+        # del suelo (antes) seguian quedando: pruebas/prueba_puerta.py con GO2_SIM_MOTAS
+        observation_sources: obstaculos barrido
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
-          sensor_frame: base_link
+          sensor_frame: lidar          # los rayos que BORRAN salen del L1 (en la cabeza), no del centro
           marking: True
           clearing: True
           min_obstacle_height: -10.0
           max_obstacle_height: 10.0
-          obstacle_max_range: 3.0
+          obstacle_max_range: 3.4          # >= el barrido (3.3 m): lo que se borra se vuelve a marcar
           obstacle_min_range: 0.0
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           observation_persistence: 0.0
           expected_update_rate: 0.0
           inf_is_valid: False
+        barrido:
+          topic: /go2/barrido
+          data_type: "PointCloud2"
+          sensor_frame: lidar
+          marking: False
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
       inflation_layer:
         # inflado corto y que cae rapido: prefiere ir por el centro, pero CABE donde cabe el cuerpo
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 10.0
-        inflation_radius: 0.50
+        # >= radio que circunscribe la huella CON el margen (0.50 m): si no, Nav2 no puede usar
+        # el inflado para saber cuando revisar la huella completa (avisaba en cada ciclo)
+        inflation_radius: 0.55
       always_send_full_costmap: True
 
 global_costmap:
   global_costmap:
     ros__parameters:
+      # (el global es grande, 40 x 40 m: mas seguido carga la CPU y con la laptop ocupada el
+      # planificador se quedaba esperando "Costmap timed out waiting for update")
       update_frequency: 2.0
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.45, 0.16], [0.45, -0.16], [-0.37, -0.16], [-0.37, 0.16]]"
-      footprint_padding: 0.0
+      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
+      footprint_padding: 0.0           # el planificador usa la huella real (el margen va en el local)
       resolution: 0.05
       # ventana de 40 x 40 m que sigue al perro: el mapa de SLAM crece mientras explora y las
       # metas de exploracion quedan justo fuera de lo ya mapeado
       rolling_window: true
       width: 40
       height: 40
-      # sin static_layer, lo no visto cuenta como libre (el planificador igual lo cruzaba con
-      # allow_unknown) y RViz no pinta un cuadro gris de 40 x 40 m
+      # lo no visto cuenta como libre (para explorar hay que planificar por lo no visto)
       track_unknown_space: false
-      # SIN static_layer: los puntitos de ruido del mapa de SLAM se volvian "muros" y Nav2 no
-      # encontraba ruta (ni para volver al inicio). Lo que el perro VE (limpio, con memoria) se
-      # marca aqui y se borra solo cuando el lidar ve que ya no esta.
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # static_layer = las PAREDES del SLAM, pero filtradas por go2_gestor (/go2/mapa_paredes):
+      # solo lineas de pared (>= 2 vecinos), sin los puntitos de ruido que antes se volvian
+      # "muros" y dejaban a Nav2 sin ruta. Sin esta capa el planificador solo conocia lo que el
+      # lidar ve AHORA (< 3 m): una pared vista con huecos o desde lejos la cruzaba en vez de
+      # salir por la puerta. Lo que el perro ve (obstacle_layer) se suma encima.
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /go2/mapa_paredes
+        map_subscribe_transient_local: True
+        subscribe_to_updates: False
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         footprint_clearing_enabled: True
-        observation_sources: obstaculos
+        observation_sources: obstaculos barrido           # (barrido: ver el costmap local)
         obstaculos:
           topic: /go2/obstaculos
           data_type: "PointCloud2"
-          sensor_frame: base_link
+          sensor_frame: lidar          # los rayos que BORRAN salen del L1 (en la cabeza), no del centro
           marking: True
           clearing: True
           min_obstacle_height: -10.0
           max_obstacle_height: 10.0
-          obstacle_max_range: 3.0
+          obstacle_max_range: 3.4          # >= el barrido (3.3 m): lo que se borra se vuelve a marcar
+          raytrace_max_range: 3.5
+        barrido:
+          topic: /go2/barrido
+          data_type: "PointCloud2"
+          sensor_frame: lidar
+          marking: False
+          clearing: True
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
           raytrace_max_range: 3.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 10.0
-        inflation_radius: 0.50
+        inflation_radius: 0.55
       always_send_full_costmap: True
 
 map_saver:
@@ -299,7 +355,9 @@ velocity_smoother:
 
 collision_monitor:
   ros__parameters:
-    # ultima barrera antes del perro: frena si la orden lo llevaria a chocar (huella exacta)
+    # ultima barrera antes del perro, SOLO para emergencias: frena si la orden lo llevaria a chocar
+    # con el CUERPO (huella exacta + 2 cm, sin el margen del costmap) en menos de 0.5 s. Antes usaba
+    # la huella con margen y 0.8 s: frenaba al pasar al lado de algo que el MPPI ya estaba esquivando
     base_frame_id: "base_link"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
@@ -313,18 +371,18 @@ collision_monitor:
     Huella:
       type: "polygon"
       action_type: "approach"
-      footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 0.8
+      points: "[[0.42, 0.11], [0.32, 0.18], [-0.39, 0.18], [-0.39, -0.18], [0.32, -0.18], [0.42, -0.11]]"
+      time_before_collision: 0.5
       simulation_time_step: 0.05
       min_points: 4
       visualize: False
       enabled: True
     Frente:
-      # zona delante del hocico: ahi va mas despacio (a los lados no: cuerpo exacto)
+      # justo delante del hocico (20 cm): ahi va un poco mas despacio (antes 39 cm y a la mitad)
       type: "polygon"
       action_type: "slowdown"
-      points: "[[0.75, 0.17], [0.75, -0.17], [0.37, -0.17], [0.37, 0.17]]"
-      slowdown_ratio: 0.5
+      points: "[[0.60, 0.16], [0.60, -0.16], [0.40, -0.16], [0.40, 0.16]]"
+      slowdown_ratio: 0.7
       min_points: 4
       visualize: True
       polygon_pub_topic: "zona_frente"
