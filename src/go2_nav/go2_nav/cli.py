@@ -436,6 +436,15 @@ def diag_nav(nodo, seg=10.0):
             L.append("  %-38s %5.1f Hz  sello con %+.2f s de atraso%s" % (
                 top, e["n"] / seg, e["edad"],
                 ("  perro en (%.2f, %.2f)" % e["centro"]) if "centro" in e else ""))
+    # quien esta suscrito a /tf: si falta el de controller_server o planner_server, ese proceso perdio
+    # la conexion DDS con el TF (y por eso sus costmaps ven al perro donde estaba hace minutos)
+    for top in ("/tf", "/odom", "/cmd_vel"):
+        try:
+            subs = sorted(i.node_name for i in nodo.get_subscriptions_info_by_topic(top))
+            pubs = sorted(i.node_name for i in nodo.get_publishers_info_by_topic(top))
+            L.append("%s  publican: %s\n        suscritos: %s" % (top, ", ".join(pubs), ", ".join(subs)))
+        except Exception as e:
+            L.append("%s: %r" % (top, e))
     L.append("carga del CPU (1/5/15 min): %.1f %.1f %.1f  (nucleos: %d)" % (os.getloadavg() + (os.cpu_count(),)))
     try:
         ps = subprocess.run(["ps", "-eo", "pcpu,pmem,pid,args", "--sort=-pcpu"], capture_output=True, text=True).stdout
