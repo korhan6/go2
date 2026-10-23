@@ -377,7 +377,9 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.3
-    source_timeout: 1.0
+    # 0 = no para al perro solo porque una nube llego tarde (eso lo cuida el driver: sin nubes del
+    # limpiador > 0.7 s -> quieto). Con 1.0 lo paraba 4-5 s cada vez que se perdian unas nubes
+    source_timeout: 0.0
     base_shift_correction: True
     stop_pub_timeout: 2.0
     polygons: ["Huella"]
