@@ -427,10 +427,13 @@ def escala(nodo):
                     sc = float(np.sum(np.where(np.isfinite(dist), 1.0 - (dist / 0.06) ** 2, 0.0)))
                     if fino is None or sc > fino[0]:
                         fino = (sc, g)
-        if mejor[0] >= 0.2 * len(s2):
+        calce = mejor[0] / float(len(s2))
+        if calce >= 0.08:
             real_giro = math.degrees(fino[1])
+        print("(giro por el lidar: %.1f grados, calzan %.0f %% de los puntos)" % (math.degrees(fino[1]), 100 * calce))
     # ---- resultado
     print("\n                 AVANCE          GIRO")
+    print("pared delante (lidar crudo): %.2f m -> %.2f m desde el CENTRO del perro" % (d0, d1))
     print("lidar crudo:     %6.3f m      %s" % (real_av, "%6.1f grados" % real_giro if real_giro is not None
                                                      else "  (no pude medirlo)"))
     res = {}
