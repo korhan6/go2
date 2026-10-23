@@ -1,6 +1,6 @@
 # go2_nav: entorno ROS 2 para hablar con el Go2 por el cable (DDS directo, como la mochila EDU)
 source /opt/ros/__DISTRO__/setup.bash
-[ -f "$HOME/go2_ws/install/setup.bash" ] && source "$HOME/go2_ws/install/setup.bash"
+[ -f "__WS__/install/setup.bash" ] && source "__WS__/install/setup.bash"
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp   # el Go2 usa CycloneDDS 0.10.x
 export ROS_DOMAIN_ID=0                         # el dominio del perro
 
