@@ -60,7 +60,7 @@ cd "$WS"
 colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
 
 cp "$AQUI/go2_env.sh" "$WS/go2_env.sh"
-sed -i "s/__DISTRO__/$DISTRO/; s#__WS__#$WS#" "$WS/go2_env.sh"
+sed -i "s/__DISTRO__/$DISTRO/g; s#__WS__#$WS#g" "$WS/go2_env.sh"
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/go2" <<EOF
 #!/bin/bash
