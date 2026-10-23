@@ -34,9 +34,9 @@ def main():
         assert o is None and a == [], (lay, o, a)
         # 3) con L1 avanza; R1 = rapido
         o, _ = m.paso(*joy(lay, nb, ("l1",), {"vx": 1.0}))
-        assert abs(o[0] - 0.40) < 1e-9 and o[1] == 0.0, (lay, o)
+        assert abs(o[0] - 0.60) < 1e-9 and o[1] == 0.0, (lay, o)
         o, _ = m.paso(*joy(lay, nb, ("l1", "r1"), {"vx": 1.0}))
-        assert abs(o[0] - 0.60) < 1e-9, (lay, o)
+        assert abs(o[0] - 1.00) < 1e-9, (lay, o)
         # 4) al soltar L1: UN cero y despues nada
         o, _ = m.paso(*joy(lay, nb, (), {"vx": 1.0}))
         assert o == (0.0, 0.0, 0.0), (lay, o)

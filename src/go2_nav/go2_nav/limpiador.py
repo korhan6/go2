@@ -373,10 +373,10 @@ class Limpiador(Node):
         # CHICA: con la memoria (120 s) la nube crecia a decenas de miles de puntos = cientos de
         # pedazos UDP; bastaba perder uno para perder la nube entera -> al collision_monitor le
         # llegaba una cada 4-5 s ("invalid source": el perro parado) y a Nav2 tambien llegaban
-        # tarde. Lo que usa Nav2: celdas de 5 cm a < 5 m del perro (lo lejano lo da el mapa)
+        # tarde. Lo que usa Nav2: puntos cada 3 cm a < 6 m del perro (lo lejano lo da el mapa)
         if len(obs_out):
-            lejos = (obs_out[:, 0] - x) ** 2 + (obs_out[:, 1] - y) ** 2 > 25.0
-            obs_out = voxel_unico(obs_out[~lejos], 0.04)
+            lejos = (obs_out[:, 0] - x) ** 2 + (obs_out[:, 1] - y) ** 2 > 36.0
+            obs_out = voxel_unico(obs_out[~lejos], 0.03)
         self.pub_barrido.publish(crear_nube(self.barrido(x, y, yaw, suelo), "odom", stamp))
         self.pub_obs.publish(crear_nube(obs_out, "odom", stamp))
         self.pub_suelo.publish(crear_nube(voxel_unico(xyz[es_suelo], 0.08), "odom", stamp))

@@ -55,7 +55,7 @@ class Mando(object):
     acciones: 'parar', 'pausa_seguir', 'levantar', 'subir', 'bajar', 'guardar', 'acostar', 'bloqueo'.
     """
 
-    def __init__(self, layout=None, signos=None, v_normal=(0.40, 0.25, 0.8), v_rapido=(0.60, 0.35, 1.1)):
+    def __init__(self, layout=None, signos=None, v_normal=(0.60, 0.30, 1.0), v_rapido=(1.00, 0.45, 1.6)):
         self.layout = layout
         self.signos = dict(SIGNOS, **(signos or {}))
         self.v_normal, self.v_rapido = v_normal, v_rapido

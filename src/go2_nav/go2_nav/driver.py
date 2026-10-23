@@ -77,9 +77,9 @@ class Driver(Node):
     def __init__(self):
         super().__init__("go2_driver")
         p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
-        self.vx_max = p("vx_max", 0.8).value
-        self.vy_max = p("vy_max", 0.4).value
-        self.wz_max = p("wz_max", 1.2).value
+        self.vx_max = p("vx_max", 1.1).value
+        self.vy_max = p("vy_max", 0.5).value
+        self.wz_max = p("wz_max", 1.6).value
         self.t_vigencia = p("t_vigencia", 0.4).value       # s que vale una orden de velocidad
         self.marcha_libre = p("freewalk", True).value       # firmware >= 1.1.7: FreeWalk
         self.pausa_control = p("pausa_con_control", True).value
@@ -475,7 +475,8 @@ class Driver(Node):
                 self.frenado[lado] = True
                 return 0.0
             self.frenado[lado] = False
-            return max(self.v_efectiva, self.v_efectiva + 1.2 * (d - self.umbral_parada - 0.20))
+            # 0.9 m/s por metro libre: a 1 m/s empieza a frenar a ~1.2 m (el Go2 tarda 0.3 s en responder)
+            return max(self.v_efectiva, self.v_efectiva + 0.9 * (d - self.umbral_parada - 0.20))
         for comp, lado_pos, lado_neg in ((0, "adelante", "atras"), (1, "izq", "der")):
             v = (vx, vy)[comp]
             lado = lado_pos if v > 0 else lado_neg
