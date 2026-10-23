@@ -59,6 +59,20 @@ EVITA_SET, EVITA_GET = 1001, 1002          # servicio "obstacles_avoid" de Unitr
 JUNTAS = ["%s_%s_joint" % (pata, j) for pata in ("FR", "FL", "RR", "RL") for j in ("hip", "thigh", "calf")]
 
 
+def seguro(f):
+    import functools
+    import traceback
+
+    @functools.wraps(f)
+    def g(self, *a, **k):
+        try:
+            return f(self, *a, **k)
+        except Exception as e:
+            self.get_logger().error("%s: %r\n%s" % (f.__name__, e, traceback.format_exc(limit=4)),
+                                    throttle_duration_sec=5.0)
+    return g
+
+
 class Driver(Node):
     def __init__(self):
         super().__init__("go2_driver")
@@ -199,6 +213,7 @@ class Driver(Node):
                                % (self.fuente_odom, self.escala_odom))
 
     # ------------------------------------------------------------------ entradas
+    @seguro
     def cb_odom(self, m):
         if self.fuente_odom == "lidar":
             q = m.pose.pose.orientation
@@ -208,6 +223,7 @@ class Driver(Node):
                                (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z),
                                fuente="lidar")
 
+    @seguro
     def publicar_odom(self, stamp_perro, pos, quat, vlin, vang, fuente="patas"):
         """/odom + TF odom->base_link (hora de la laptop) y /go2/odom_perro (hora del perro, para
         go2_nube y go2_slam3d). escala_odom corrige la escala de x, y de las patas ('go2 escala').
@@ -277,6 +293,7 @@ class Driver(Node):
         self.n_odom += 1
         self.t_odom = time.monotonic()
 
+    @seguro
     def cb_glim(self, m):
         """Odometria de GLIM (pose de la IMU del cuerpo en su 'odom') -> base_link."""
         self.t_glim = time.monotonic()
@@ -290,6 +307,7 @@ class Driver(Node):
         self.publicar_odom(m.header.stamp, (bx, by, bz), (x, y, z, w), (v.linear.x, v.linear.y, v.linear.z),
                            (v.angular.x, v.angular.y, v.angular.z), fuente="glim")
 
+    @seguro
     def cb_sport_rapido(self, m):
         self.t_sport_rapido = time.monotonic()
         self._odom_patas(m)
@@ -306,12 +324,14 @@ class Driver(Node):
         self.publicar_odom(st, tuple(float(v) for v in m.position), (float(q[1]), float(q[2]), float(q[3]), float(q[0])),
                            tuple(float(v) for v in m.velocity), (0.0, 0.0, float(m.yaw_speed)))
 
+    @seguro
     def cb_sport(self, m):
         self.altura = float(m.body_height)
         self.modo = int(m.mode)
         if time.monotonic() - self.t_sport_rapido > 0.5:      # sin /sportmodestate rapido: esta (20 Hz)
             self._odom_patas(m)
 
+    @seguro
     def cb_low(self, m):
         self.soc = int(m.bms_state.soc)
         # angulos de los 12 motores -> /joint_states: el modelo del perro en RViz mueve las patas
@@ -338,10 +358,12 @@ class Driver(Node):
         if time.monotonic() - self.t_patas > 1.0:
             self.publicar_patas([0.0, 0.8, -1.5] * 4)
 
+    @seguro
     def cb_cmd(self, m):
         self.cmd = (m.linear.x, m.linear.y, m.angular.z)
         self.t_cmd = time.monotonic()
 
+    @seguro
     def cb_cmd_prio(self, m):
         self.cmd_prio = (m.linear.x, m.linear.y, m.angular.z)
         self.t_prio = time.monotonic()
@@ -570,6 +592,7 @@ class Driver(Node):
     def remoto_activo(self):
         return self.pausa_control and time.monotonic() - self.t_remoto < 1.0
 
+    @seguro
     def lazo(self):
         ahora = time.monotonic()
         nav = False
@@ -620,6 +643,7 @@ class Driver(Node):
         # la app puede apagar el L1 (ahorro); esto lo deja prendido
         self.pub_lidar.publish(String(data="ON"))
 
+    @seguro
     def diag(self):
         if self.soc is not None:
             self.pub_bat.publish(Float32(data=float(self.soc)))
