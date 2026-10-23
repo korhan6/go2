@@ -25,6 +25,8 @@
   go2 instalar_glim     instala GLIM (con GPU CUDA si se puede); despues: go2 lanzar slam:=glim rviz:=true
   go2 vision_trt        convierte YOLO a TensorRT FP16 (la RTX lo corre 2-3 veces mas rapido; una vez)
   go2 grabar            graba lo del lidar y la odometria (~/go2_bags/FECHA) para afinar el SLAM sin el perro
+  go2 calibrar_lidar    mide la inclinacion REAL del L1 con el piso (perro quieto, piso plano) y la guarda:
+                        si esta torcido, el piso "baja" a lo lejos -> caidas/escaleras y "algo delante" falsos
   go2 escala            mide si la odometria mide bien las distancias: frente a una pared avanza ~0.6 m y
                         compara la odometria con lo que se acerco la pared segun el lidar
   go2 calibrar_mov      mide la respuesta real del perro (adelante/atras y giros, ~40 s, 1 m libre delante
@@ -292,6 +294,113 @@ def _guardar_ajuste_odom(fuente, k, k_lidar=1.0):
               "camine mas rapido de lo que pide Nav2). Si hace falta, 'go2 calibrar_mov' de nuevo.")
     print("guardado en %s: fuente_odom=%s escala_odom=%.3f escala_lidar=%.3f  -> relanza 'go2 lanzar'"
           % (ruta, fuente, k, k_lidar))
+
+
+def calibrar_lidar(nodo):
+    """Inclinacion REAL del L1 en la cabeza, medida con el piso: con el perro quieto en piso plano,
+    el piso tiene que quedar horizontal y a la altura del cuerpo. Si el L1 esta unos grados distinto
+    del URDF, el piso 'baja' con la distancia: el limpiador ve caidas/escaleras de bajada y obstaculos
+    donde no hay nada (y el perro frena). Guarda go2_nube.extrinseca_rpy/xyz en ajustes.yaml."""
+    import os
+    import numpy as np
+    import yaml
+    from rclpy.qos import qos_profile_sensor_data
+    from sensor_msgs.msg import PointCloud2
+    from unitree_go.msg import SportModeState
+    from .nube_cruda import leer_campos, rot_rpy
+    ruta = os.path.expanduser("~/.go2_nav/ajustes.yaml")
+    try:
+        aj = yaml.safe_load(open(ruta)) or {}
+    except OSError:
+        aj = {}
+    pn = aj.get("go2_nube", {}).get("ros__parameters", {})
+    rpy0 = list(pn.get("extrinseca_rpy", [0.0, 2.8782, 0.0]))
+    xyz0 = list(pn.get("extrinseca_xyz", [0.28945, 0.0, -0.046825]))
+    R0 = rot_rpy(*rpy0)
+    nubes, alt = [], []
+    nodo.create_subscription(PointCloud2, "/utlidar/cloud", lambda m: nubes.append(m), qos_profile_sensor_data)
+    nodo.create_subscription(SportModeState, "/lf/sportmodestate", lambda m: alt.append(float(m.body_height)),
+                             qos_profile_sensor_data)
+    print("CALIBRAR EL L1 con el piso: perro QUIETO y de pie, en piso PLANO y despejado ~2 m alrededor (4 s)")
+    t = time.monotonic()
+    while time.monotonic() - t < 4.0 or not nubes:
+        rclpy.spin_once(nodo, timeout_sec=0.1)
+        if time.monotonic() - t > 20:
+            print("no llega /utlidar/cloud")
+            return 1
+    P = []
+    for m in nubes:
+        d, _ = leer_campos(m, ["x", "y", "z"])
+        p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
+        P.append(p[np.isfinite(p).all(axis=1)])
+    P = np.concatenate(P)
+    r = np.linalg.norm(P, axis=1)
+    B = P @ R0.T + np.array(xyz0)
+    sel = (B[:, 2] < -0.12) & (r > 0.7) & (r < 3.0)          # piso lejos del error de cerca del L1
+    if sel.sum() < 200:
+        print("veo muy poco piso (%d puntos): despeja alrededor y repite" % sel.sum())
+        return 1
+    F = P[sel]
+    rng = np.random.default_rng(0)
+    mejor = None
+    for _ in range(400):
+        a, b, c = F[rng.choice(len(F), 3, replace=False)]
+        n = np.cross(b - a, c - a)
+        if np.linalg.norm(n) < 1e-9:
+            continue
+        n /= np.linalg.norm(n)
+        ins = np.abs((F - a) @ n) < 0.015
+        if mejor is None or ins.sum() > mejor[0]:
+            mejor = (int(ins.sum()), ins)
+    Fi = F[mejor[1]]
+    c = Fi.mean(axis=0)
+    n = np.linalg.eigh(np.cov((Fi - c).T))[1][:, 0]          # normal del plano (ajuste fino)
+    if n @ c > 0:
+        n = -n                                               # que apunte hacia el sensor (arriba)
+    h = float(-(n @ c))                                      # altura del L1 sobre el piso
+    a = R0 @ n                                               # el "arriba" del piso en el cuerpo, hoy
+    eje = np.cross(a, [0.0, 0.0, 1.0])
+    ang = math.atan2(np.linalg.norm(eje), a[2])
+    if np.linalg.norm(eje) > 1e-9:
+        k = eje / np.linalg.norm(eje)
+        K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+        Rc = np.eye(3) + math.sin(ang) * K + (1 - math.cos(ang)) * K @ K
+    else:
+        Rc = np.eye(3)
+    R1 = Rc @ R0
+    rpy1 = [math.atan2(R1[2, 1], R1[2, 2]), math.asin(-max(-1.0, min(1.0, R1[2, 0]))), math.atan2(R1[1, 0], R1[0, 0])]
+    if abs(rpy1[0]) > math.pi / 2:                           # misma rotacion, escrita como el URDF (pitch ~2.88)
+        w = lambda v: (v + math.pi) % (2 * math.pi) - math.pi  # noqa: E731
+        rpy1 = [w(rpy1[0] + math.pi), math.pi - rpy1[1], w(rpy1[2] + math.pi)]
+    cuerpo = float(np.median(alt)) if alt else None
+    print("piso: %d puntos en el plano; L1 a %.3f m del piso" % (mejor[0], h))
+    print("inclinacion del L1: el piso estaba torcido %.1f grados -> corregido" % math.degrees(ang))
+    print("  URDF/actual rpy = (%.4f, %.4f, %.4f)  ->  medido (%.4f, %.4f, %.4f)"
+          % tuple(rpy0 + rpy1))
+    xyz1 = list(xyz0)
+    if cuerpo:
+        z1 = h - cuerpo                                      # el L1 respecto al centro del cuerpo
+        print("  altura: cuerpo a %.3f m (patas) -> el L1 a %+.3f m del centro (URDF %+.3f)" % (cuerpo, z1, xyz0[2]))
+        if abs(z1 - xyz0[2]) < 0.08:
+            xyz1[2] = round(z1, 4)
+        else:
+            print("  (diferencia de altura > 8 cm: no la cambio, revisa que el piso este plano)")
+    if math.degrees(ang) < 0.5 and abs(xyz1[2] - xyz0[2]) < 0.01:
+        print("el L1 ya estaba bien calibrado.")
+        return 0
+    try:
+        si = input("guardo esta calibracion en %s? [s/N] " % ruta)
+    except EOFError:
+        si = ""
+    if si.strip().lower().startswith("s"):
+        q = aj.setdefault("go2_nube", {}).setdefault("ros__parameters", {})
+        q["extrinseca_rpy"] = [round(v, 5) for v in rpy1]
+        q["extrinseca_xyz"] = [round(v, 5) for v in xyz1]
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w") as f:
+            yaml.safe_dump(aj, f, default_flow_style=False, sort_keys=False)
+        print("guardado. Relanza 'go2 lanzar' (y despues 'go2 calibrar' para los fantasmas del cuerpo)")
+    return 0
 
 
 def escala(nodo):
@@ -1055,6 +1164,8 @@ sudo apt-get install -y libgtsam-points-dev ros-jazzy-glim-ros && echo "GLIM CPU
             return probar_mov(nodo)
         if args[0] == "manejar":
             return manejar(nodo)
+        if args[0] == "calibrar_lidar":
+            return calibrar_lidar(nodo)
         if args[0] == "escala":
             return escala(nodo)
         if args[0] == "calibrar_mov":
