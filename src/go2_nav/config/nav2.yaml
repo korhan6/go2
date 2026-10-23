@@ -38,7 +38,7 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    controller_frequency: 20.0
+    controller_frequency: 15.0           # a 20 Hz no le alcanzaba la CPU (iba a 10.8 Hz)
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001      # el Go2 SI camina de lado
@@ -53,7 +53,8 @@ controller_server:
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.20
       required_movement_angle: 0.4
-      movement_time_allowance: 15.0
+      # 6 s sin avanzar 20 cm ni girar 23 grados = trabado -> ruta nueva (antes 15 s: "tarda TANTO")
+      movement_time_allowance: 6.0
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -75,9 +76,9 @@ controller_server:
       closed_loop: false
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
-      time_steps: 56
-      model_dt: 0.05
-      batch_size: 1500
+      time_steps: 40
+      model_dt: 0.07                      # >= 1/controller_frequency (MPPI lo exige); horizonte 2.8 s
+      batch_size: 1000
       ax_max: 2.0
       ax_min: -2.0
       ay_max: 2.0

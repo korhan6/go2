@@ -27,9 +27,20 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
+        <!-- si el controlador NO puede seguir la ruta (algo nuevo delante, o "no progresa"): limpia el
+             local, retrocede un poquito (si hay lugar atras) y calcula una RUTA NUEVA con lo que ve
+             ahora. Antes solo limpiaba y volvia a intentar la MISMA ruta: se quedaba parado frente
+             al obstaculo hasta que se acababan los reintentos -->
+        <RecoveryNode number_of_retries="4" name="RecoveryFollowPath">
           <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Sequence name="RutaNueva">
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <Fallback name="RetrocederSiSePuede">
+              <BackUp backup_dist="0.10" backup_speed="0.10"/>
+              <AlwaysSuccess/>
+            </Fallback>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+          </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="FallbackRecoveries">
