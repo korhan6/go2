@@ -331,7 +331,11 @@ def escala(nodo):
         c = p @ R_ext.T + t_ext
         cuerpo = (np.abs(c[:, 0]) < 0.45) & (np.abs(c[:, 1]) < 0.25) & (c[:, 2] > -0.45)
         crudas.append(c[~cuerpo])
+    def cb_corr(m):
+        q, p = m.pose.pose.orientation, m.pose.pose.position
+        od["go2_nav"] = (p.x, p.y, yaw_q(q.x, q.y, q.z, q.w))
     nodo.create_subscription(Odometry, "/utlidar/robot_odom", cb_lidar, qos_profile_sensor_data)
+    nodo.create_subscription(Odometry, "/odom", cb_corr, 10)          # la que usa go2_nav (ya corregida)
     nodo.create_subscription(SportModeState, "/lf/sportmodestate", cb_patas, qos_profile_sensor_data)
     nodo.create_subscription(PointCloud2, "/utlidar/cloud", cb_cruda, qos_profile_sensor_data)
     pub = nodo.create_publisher(Twist, "cmd_vel_prioridad", 10)
@@ -490,7 +494,7 @@ def escala(nodo):
     print("lidar crudo:     %6.3f m      %s" % (real_av, "%6.1f grados" % real_giro if real_giro is not None
                                                      else "  (no pude medirlo)"))
     res = {}
-    for f in fuentes:
+    for f in fuentes + ["go2_nav"]:
         if f in o0 and f in o1 and f in o2 and f in o3:
             av = avance(o0[f], o1[f], o0[f][2])
             gi = giro(o2[f], o3[f])
@@ -506,6 +510,13 @@ def escala(nodo):
 
     def error(r):
         return abs(r[0] - 1) + (abs(r[1] - 1) if r[1] else 0.5)
+    corr = res.pop("go2_nav", None)
+    if corr and corr[0]:
+        print("\nla odometria que USA go2_nav (con tus ajustes) mide el %.0f %% del avance%s"
+              % (100 * corr[0], " y el %.0f %% del giro" % (100 * corr[1]) if corr[1] else ""))
+        if abs(corr[0] - 1) <= 0.08 and (corr[1] is None or abs(corr[1] - 1) <= 0.10):
+            print("-> BIEN: ya esta corregida. No hace falta guardar nada.")
+            return 0
     validas = {f: r for f, r in res.items() if r[0]}
     if not validas:
         return 1
