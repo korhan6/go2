@@ -101,7 +101,9 @@ def generar(origen, destino, modo="mapeo", gpu=False):
     r.update({
         "enable_local_mapping": modo == "mapeo",
         "enable_global_mapping": modo == "mapeo",
-        "imu_topic": "/go2/imu", "points_topic": "/go2/l1_sin_cuerpo", "image_topic": "",
+        "imu_topic": "/go2/imu", "points_topic": "/go2/l1_sin_cuerpo",
+        # un nombre VALIDO aunque no haya camara: con "" GLIM abortaba (InvalidTopicNameError)
+        "image_topic": "/go2/glim_sin_imagen",
         "imu_frame_id": "imu", "lidar_frame_id": "utlidar_lidar", "base_frame_id": "",
         "odom_frame_id": "odom", "map_frame_id": "map", "publish_imu2lidar": False,
         "acc_scale": 1.0,                                       # la IMU del cuerpo ya da m/s2

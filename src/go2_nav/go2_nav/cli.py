@@ -296,6 +296,58 @@ def _guardar_ajuste_odom(fuente, k, k_lidar=1.0):
           % (ruta, fuente, k, k_lidar))
 
 
+def diag_tf(nodo, seg=15.0):
+    """Quien publica cada TF, a que ritmo y con que atraso, y si llegan /odom y /go2/correccion.
+    Lo guarda en ~/.go2_nav/diag_tf.txt (para mandarlo / leerlo)."""
+    import os
+    from nav_msgs.msg import Odometry
+    from std_msgs.msg import Float64MultiArray
+    from tf2_msgs.msg import TFMessage
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    est = {}
+    reloj = nodo.get_clock()
+
+    def cb(m):
+        ahora = reloj.now().nanoseconds * 1e-9
+        for t in m.transforms:
+            k = (t.header.frame_id, t.child_frame_id)
+            e = est.setdefault(k, {"n": 0, "atraso": [], "ultimo": 0.0})
+            e["n"] += 1
+            st = t.header.stamp.sec + t.header.stamp.nanosec * 1e-9
+            e["atraso"].append(ahora - st)
+            e["ultimo"] = ahora
+    otros = {"/odom": 0, "/go2/correccion": 0, "/go2/odom_perro": 0}
+    nodo.create_subscription(TFMessage, "/tf", cb, 200)
+    nodo.create_subscription(Odometry, "/odom", lambda m: otros.__setitem__("/odom", otros["/odom"] + 1), 50)
+    nodo.create_subscription(Odometry, "/go2/odom_perro", lambda m: otros.__setitem__("/go2/odom_perro", otros["/go2/odom_perro"] + 1), 50)
+    lat = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+    nodo.create_subscription(Float64MultiArray, "/go2/correccion",
+                             lambda m: otros.__setitem__("/go2/correccion", otros["/go2/correccion"] + 1), lat)
+    print("midiendo /tf %.0f s..." % seg)
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seg:
+        rclpy.spin_once(nodo, timeout_sec=0.05)
+    L = ["DIAGNOSTICO TF (%.0f s) %s" % (seg, time.strftime("%Y-%m-%d %H:%M:%S"))]
+    L.append("publicadores de /tf: %s" % ", ".join(sorted("%s" % i.node_name for i in nodo.get_publishers_info_by_topic("/tf"))))
+    for (pa, hi), e in sorted(est.items()):
+        a = sorted(e["atraso"])
+        L.append("  %-10s -> %-12s %6.1f Hz  atraso mediana %+.3f s  max %+.3f s" % (
+            pa, hi, e["n"] / seg, a[len(a) // 2], a[-1]))
+    if not any(k == ("map", "odom") for k in est):
+        L.append("  !! NADIE publica map -> odom")
+    if not any(k == ("odom", "base_link") for k in est):
+        L.append("  !! NADIE publica odom -> base_link")
+    for k, n in otros.items():
+        L.append("%s: %.1f Hz" % (k, n / seg))
+    txt = "\n".join(L)
+    print(txt)
+    ruta = os.path.expanduser("~/.go2_nav/diag_tf.txt")
+    with open(ruta, "w") as f:
+        f.write(txt + "\n")
+    print("(guardado en %s)" % ruta)
+    return 0
+
+
 def calibrar_lidar(nodo):
     """Inclinacion REAL del L1 en la cabeza, medida con el piso: con el perro quieto en piso plano,
     el piso tiene que quedar horizontal y a la altura del cuerpo. Si el L1 esta unos grados distinto
@@ -1164,6 +1216,8 @@ sudo apt-get install -y libgtsam-points-dev ros-jazzy-glim-ros && echo "GLIM CPU
             return probar_mov(nodo)
         if args[0] == "manejar":
             return manejar(nodo)
+        if args[0] == "diag_tf":
+            return diag_tf(nodo)
         if args[0] == "calibrar_lidar":
             return calibrar_lidar(nodo)
         if args[0] == "escala":
