@@ -166,7 +166,8 @@ class Driver(Node):
         self.create_subscription(Response, "/api/sport/response", self.cb_sport_resp, 10)
         self.altura_pedida, self.altura_resp, self.altura_info = 0.0, None, ""
         self.rid_altura = None
-        self.create_subscription(String, "/go2/limpiador_estado", self.cb_holg, 1)
+        self.create_subscription(String, "/go2/holguras", self.cb_holg, 5)        # ~15 Hz, cada nube
+        self.frenado = {}            # lado -> True mientras esta frenado (histeresis 11 -> 15 cm)
         # sin nubes del lidar Nav2 maneja a ciegas (y el TF del mapa se atrasa): pausa
         self.create_subscription(Header, "/go2/lidar_vivo", self.cb_vivo, 5)
         self.t_vivo = 0.0
@@ -466,15 +467,19 @@ class Driver(Node):
         if H is None:
             return vx, vy
 
-        def tope(d):
+        def tope(d, lado):
             if d is None:
                 return None
-            if d < self.umbral_parada:
+            # histeresis: frena a < umbral (11 cm) y suelta recien a > umbral + 4 cm (no tironea)
+            if d < self.umbral_parada or (self.frenado.get(lado) and d < self.umbral_parada + 0.04):
+                self.frenado[lado] = True
                 return 0.0
+            self.frenado[lado] = False
             return max(self.v_efectiva, self.v_efectiva + 1.2 * (d - self.umbral_parada - 0.20))
         for comp, lado_pos, lado_neg in ((0, "adelante", "atras"), (1, "izq", "der")):
             v = (vx, vy)[comp]
-            t = tope(H.get(lado_pos if v > 0 else lado_neg)) if v else None
+            lado = lado_pos if v > 0 else lado_neg
+            t = tope(H.get(lado), lado) if v else None
             if t is not None and abs(v) > t:
                 v = math.copysign(t, v)
                 if t == 0.0:

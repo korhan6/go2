@@ -390,7 +390,7 @@ collision_monitor:
       points: "[[0.43, 0.13], [0.33, 0.20], [-0.40, 0.20], [-0.40, -0.20], [0.33, -0.20], [0.43, -0.13]]"
       time_before_collision: 0.3
       simulation_time_step: 0.05
-      min_points: 4
+      min_points: 8                       # 4 = una sola celda de caida virtual frenaba al perro
       visualize: False
       enabled: True
     Frente:

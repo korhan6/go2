@@ -296,6 +296,103 @@ def _guardar_ajuste_odom(fuente, k, k_lidar=1.0):
           % (ruta, fuente, k, k_lidar))
 
 
+def analizar_frenadas(ruta):
+    """go2 analizar_frenadas CARPETA_BAG: en cada /go2/obstaculos, que hay en la zona de freno (< 11 cm
+    delante de la nariz / costados / atras) y DE DONDE sale: lo ve el L1 crudo ahora (real), es una
+    caida virtual (25 cm sobre el piso, en rejilla) o es memoria (no esta en el L1 crudo).
+    Escribe ~/.go2_nav/frenadas.txt (resumen) y frenadas.csv (cada caso)."""
+    import collections
+    import os
+    import numpy as np
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+    from .nube import leer_xyz
+    from .nube_cruda import rot_rpy
+    from .nucleo.terreno import ANCHO2, LARGO2
+    ruta = os.path.expanduser(ruta)
+    r = rosbag2_py.SequentialReader()
+    r.open(rosbag2_py.StorageOptions(uri=ruta, storage_id=""), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    tipos = {t.name: t.type for t in r.get_all_topics_and_types()}
+    quiero = [t for t in ("/odom", "/go2/obstaculos", "/utlidar/cloud") if t in tipos]
+    r.set_filter(rosbag2_py.StorageFilter(topics=quiero))
+    clases = {t: get_message(tipos[t]) for t in quiero}
+    R_ext, t_ext = rot_rpy(0.0, 2.8782, 0.0), np.array([0.28945, 0.0, -0.046825])
+    pose, crudo = None, None
+    FRENO = 0.11
+    filas = []
+    n_msgs = 0
+    cuenta = collections.Counter()
+    t0 = None
+    while r.has_next():
+        top, data, t = r.read_next()
+        t = t * 1e-9
+        t0 = t if t0 is None else t0
+        m = deserialize_message(data, clases[top])
+        if top == "/odom":
+            q, p = m.pose.pose.orientation, m.pose.pose.position
+            pose = (p.x, p.y, p.z, math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+            continue
+        if top == "/utlidar/cloud":
+            c = leer_xyz(m).astype(np.float64) @ R_ext.T + t_ext
+            crudo = (t, c)
+            continue
+        if pose is None:
+            continue
+        n_msgs += 1
+        o = leer_xyz(m).astype(np.float64)
+        if not len(o):
+            continue
+        x, y, z, yaw = pose
+        c_, s_ = math.cos(yaw), math.sin(yaw)
+        dx, dy = o[:, 0] - x, o[:, 1] - y
+        fx, fy = c_ * dx + s_ * dy, -s_ * dx + c_ * dy
+        h = o[:, 2] - (z - 0.32)
+        zonas = {"adelante": (np.abs(fy) < ANCHO2 + 0.05) & (fx > LARGO2) & (fx - LARGO2 < FRENO),
+                 "atras": (np.abs(fy) < ANCHO2 + 0.05) & (fx < -LARGO2) & (-fx - LARGO2 < FRENO),
+                 "izq": (np.abs(fx) < LARGO2) & (fy > ANCHO2) & (fy - ANCHO2 < FRENO),
+                 "der": (np.abs(fx) < LARGO2) & (fy < -ANCHO2) & (-fy - ANCHO2 < FRENO)}
+        for lado, sel in zonas.items():
+            if sel.sum() < 3:
+                continue
+            hz = h[sel]
+            virtual = float(np.mean(np.abs(hz - 0.25) < 0.03)) > 0.6
+            vivo = False
+            if crudo is not None and abs(crudo[0] - t) < 0.3:
+                cb = crudo[1]
+                hc = cb[:, 2] + 0.32
+                if lado == "adelante":
+                    zc = (np.abs(cb[:, 1]) < ANCHO2 + 0.08) & (cb[:, 0] > LARGO2 - 0.03) & (cb[:, 0] - LARGO2 < FRENO + 0.06)
+                elif lado == "atras":
+                    zc = (np.abs(cb[:, 1]) < ANCHO2 + 0.08) & (cb[:, 0] < -LARGO2 + 0.03) & (-cb[:, 0] - LARGO2 < FRENO + 0.06)
+                elif lado == "izq":
+                    zc = (np.abs(cb[:, 0]) < LARGO2) & (cb[:, 1] > ANCHO2 - 0.03) & (cb[:, 1] - ANCHO2 < FRENO + 0.06)
+                else:
+                    zc = (np.abs(cb[:, 0]) < LARGO2) & (cb[:, 1] < -ANCHO2 + 0.03) & (-cb[:, 1] - ANCHO2 < FRENO + 0.06)
+                zc &= (hc > 0.08) & (hc < 0.7)
+                vivo = int(zc.sum()) >= 3
+            tipo = "real_L1" if vivo else ("caida_virtual" if virtual else "memoria")
+            cuenta[(lado, tipo)] += 1
+            d = np.where(lado in ("adelante", "atras"), np.abs(fx[sel]) - LARGO2, np.abs(fy[sel]) - ANCHO2)
+            filas.append("%.2f,%s,%s,%d,%.3f,%.3f,%.3f" % (t - t0, lado, tipo, int(sel.sum()), float(np.median(d)),
+                                                          float(np.median(hz)), float(np.median(fy[sel]))))
+    L = ["ANALISIS DE FRENADAS: %s" % ruta, "mensajes de /go2/obstaculos: %d" % n_msgs,
+         "con algo a < %.0f cm del cuerpo (lo que hace frenar):" % (FRENO * 100)]
+    for (lado, tipo), n in sorted(cuenta.items(), key=lambda kv: -kv[1]):
+        L.append("  %-9s %-14s %5d mensajes (%.0f %%)" % (lado, tipo, n, 100.0 * n / max(1, n_msgs)))
+    L.append("tipo: real_L1 = el L1 crudo ve algo ahi ahora | caida_virtual = borde/escalon inventado a 25 cm |"
+             " memoria = no esta en el L1 crudo (recuerdo o ruido de otra nube)")
+    txt = "\n".join(L)
+    print(txt)
+    d = os.path.expanduser("~/.go2_nav")
+    with open(os.path.join(d, "frenadas.txt"), "w") as f:
+        f.write(txt + "\n")
+    with open(os.path.join(d, "frenadas.csv"), "w") as f:
+        f.write("t,lado,tipo,puntos,dist_mediana,altura_mediana,fy_mediana\n" + "\n".join(filas[:20000]) + "\n")
+    print("(guardado en ~/.go2_nav/frenadas.txt y frenadas.csv)")
+    return 0
+
+
 def diag_tf(nodo, seg=15.0):
     """Quien publica cada TF, a que ritmo y con que atraso, y si llegan /odom y /go2/correccion.
     Lo guarda en ~/.go2_nav/diag_tf.txt (para mandarlo / leerlo)."""
@@ -1157,6 +1254,8 @@ def main():
         return 0
     if args[0] == "ver3d":
         return ver3d(args[1:])
+    if args[0] == "analizar_frenadas":
+        return analizar_frenadas(args[1] if len(args) > 1 else "~/go2_bags/ligera")
     if args[0] == "instalar_glim":
         # PPA oficial de koide3 (Ubuntu 24.04). Con GPU NVIDIA intenta la version CUDA; si apt no
         # puede (faltan las librerias CUDA de NVIDIA), instala la de CPU

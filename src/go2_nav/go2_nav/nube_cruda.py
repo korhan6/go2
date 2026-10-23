@@ -70,7 +70,9 @@ class NubeCruda(Node):
         self.topico = P("topico", "/utlidar/cloud").value
         xyz = list(P("extrinseca_xyz", [0.28945, 0.0, -0.046825]).value)
         rpy = list(P("extrinseca_rpy", [0.0, 2.8782, 0.0]).value)
-        self.acumular = int(P("acumular", 3).value)
+        # 1 vuelta por mensaje: el limpiador exige ver un obstaculo en 2 de 6 NUBES; con 3 vueltas por
+        # nube, un rebote de una sola vuelta ya contaba como "confirmado" (frenadas contra nada)
+        self.acumular = int(P("acumular", 1).value)
         # escala de las distancias del L1 ('go2 escala' la mide con la altura del lidar sobre el piso)
         self.escala = float(P("escala_lidar", 1.0).value)
         self.r_min = P("rango_min", 0.05).value

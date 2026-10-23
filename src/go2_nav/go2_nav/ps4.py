@@ -43,7 +43,7 @@ class Ps4(Node):
         self.orden, self.t_orden = None, 0.0
         self.pub = self.create_publisher(Twist, "cmd_vel_prioridad", 10)
         self.create_subscription(Joy, "/joy", self.cb_joy, 10)
-        self.create_subscription(String, "/go2/limpiador_estado", self.cb_holg, 1)
+        self.create_subscription(String, "/go2/holguras", self.cb_holg, 5)
         self.cli = self.create_client(Comando, "/go2/comando")
         self.cli_levantar = self.create_client(Trigger, "/go2/levantar")
         self.create_timer(0.05, self.lazo)               # 20 Hz: el driver da 0.4 s de vigencia

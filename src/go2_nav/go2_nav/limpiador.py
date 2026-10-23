@@ -182,6 +182,9 @@ T_VISTO = 1.5          # s: un obstaculo a la vista del L1 que ya no se ve se ol
 # de 3 m. Con 20 s, el perro trabado en una puerta olvidaba el marco (en la zona ciega, junto a la
 # cabeza), el marco desaparecia del mapa y Nav2 lo empujaba contra el (prueba_puerta.py)
 T_FUERA = 120.0
+# ... pero DELANTE de la nariz solo T_FRENTE: ahi el L1 si ve (un poco mas lejos). Con 120 s, un
+# punto de ruido o alguien que ya se fue dejaba al perro frenado "contra nada" (informe de frenadas)
+T_FRENTE = 3.0
 T_SOLIDO = 1.0         # s: ... si se vio al menos este tiempo (un rebote de un instante no). Lo que
                        # entra a la zona ciega pegada al cuerpo (un marco de puerta) se recuerda igual
 
@@ -250,6 +253,7 @@ class Limpiador(Node):
         self.pub_sin = self.create_publisher(PointCloud2, "/go2/nube_sin_fantasmas", sd)
         self.pub_scan = self.create_publisher(LaserScan, "/scan", sd)
         self.pub_est = self.create_publisher(String, "/go2/limpiador_estado", 1)
+        self.pub_holg = self.create_publisher(String, "/go2/holguras", 5)
         self.pub_vivo = self.create_publisher(Header, "/go2/lidar_vivo", 1)   # latido: llego una nube
         self.pub_giro = self.create_publisher(Twist, "cmd_vel_prioridad", 10)
         self.create_service(Trigger, "/go2/calibrar", self.srv_calibrar)
@@ -337,7 +341,9 @@ class Limpiador(Node):
         self.pub_sin.publish(crear_nube(xyz0[~(caja if solo_caja else propio)], "odom", stamp))
         # 4) clases
         es_suelo = (np.abs(h) < 0.06) & ~propio
-        cand = (h >= self.obst_min) & (h <= self.obst_max) & ~propio
+        # cerca del L1 (< 0.45 m) su error de altura es mayor: ahi el piso necesita 4 cm mas para ser obstaculo
+        r_l1 = np.hypot(fx - self.lidar_fx, fy)
+        cand = (h >= self.obst_min + np.where(r_l1 < 0.45, 0.04, 0.0)) & (h <= self.obst_max) & ~propio
         # 5) confirmacion con varias nubes (nucleo/voxeles.py): un obstaculo real se ve en >= 2 de
         #    las ultimas 6 nubes; con el L1 (ralo) cada nube toca puntos distintos del mismo marco
         if self.persistencia:
@@ -362,6 +368,9 @@ class Limpiador(Node):
             self.publicar_scan(np.concatenate([pared, ciegos]), x, y, yaw, stamp)
         obst = np.concatenate([obst, recordados])
         self.ultimo = self.holguras(obst, virtuales, x, y, yaw)
+        # holguras en CADA nube (~15 Hz), aparte: antes solo salian a 1 Hz en limpiador_estado y el
+        # freno del driver/control trabajaba con datos de hasta 1 s (frenaba tarde, o seguia frenado)
+        self.pub_holg.publish(String(data=json.dumps(self.ultimo)))
         self.ultimo.update({"suelo_bajo_cuerpo": round(alto_cuerpo, 3), "puntos": int(len(xyz)),
                             "obstaculos": int(len(obst)), "fantasmas": int(len(fant)),
                             "caidas": int(len(virtuales) // 4), "reflejos": int(self.reflejos)})
@@ -437,7 +446,9 @@ class Limpiador(Node):
         dentro = (np.abs(fx) < LARGO2) & (np.abs(fy) < ANCHO2)
         altura_ok = (h > self.obst_min - 0.08) & (h < self.obst_max + 0.10)
         largo = ciego | (solido & ~a_la_vista)
-        guardar = cerca & ~dentro & altura_ok & np.where(largo, edad < T_FUERA, edad < T_VISTO)
+        frente = fx > LARGO2 - 0.05
+        guardar = cerca & ~dentro & altura_ok & np.where(largo, edad < np.where(frente, T_FRENTE, T_FUERA),
+                                                         edad < T_VISTO)
         self.mem_k, self.mem_xyz, self.mem_t, self.mem_t0 = mk[guardar], mx[guardar], mt[guardar], m0[guardar]
         # lo que se acaba de ver ya va en la nube de esta vuelta
         viejo = guardar & (edad > 0.0)
