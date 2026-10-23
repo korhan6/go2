@@ -5,7 +5,7 @@ from setuptools import setup
 paquete = "go2_nav"
 setup(
     name=paquete,
-    version="1.6.0",
+    version="1.7.0",
     packages=[paquete, paquete + ".nucleo"],
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + paquete]),
@@ -31,6 +31,7 @@ setup(
         "perro_sim = go2_nav.perro_sim:main",
         "ps4 = go2_nav.ps4:main",
         "mapa3d = go2_nav.mapa3d:main",
+        "slam3d = go2_nav.slam3d:main",
         "go2 = go2_nav.cli:main",
     ]},
 )

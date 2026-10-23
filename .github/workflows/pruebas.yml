@@ -21,5 +21,7 @@ jobs:
         run: python3 pruebas/prueba_mando.py
       - name: Mapa 3D (sin ROS)
         run: python3 pruebas/prueba_mapa3d.py
+      - name: SLAM 3D (cuarto simulado, odometria con deriva, una persona caminando)
+        run: python3 pruebas/prueba_slam3d.py
       - name: nucleo (escaleras, exploracion, limpiador)
         run: python3 pruebas/prueba_nucleo.py

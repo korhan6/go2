@@ -96,6 +96,8 @@ class Gestor(Node):
         # mapa guardado (go2 lanzar mapa:=NOMBRE): el perro solo se UBICA en el mapa; no explora ni
         # cruza escaleras (cambiaria el mapa). Los puntos van con el mapa: mapas/NOMBRE.puntos.json
         self.mapa_fijo = p("mapa", "").value.strip()
+        # go2 = go2_slam3d (un mapa 3D para toda la casa; cambia de piso solo) | toolbox = slam_toolbox
+        self.toolbox = p("slam", "go2").value == "toolbox"
         self.mapa_sesion = None      # el mapa que se guardo en ESTA sesion (los puntos nuevos van tambien ahi)
         os.makedirs(os.path.join(DATOS, "mapas"), exist_ok=True)
         self.ruta_puntos = (os.path.join(DATOS, "mapas", self.mapa_fijo + ".puntos.json") if self.mapa_fijo
@@ -879,7 +881,7 @@ class Gestor(Node):
     def _guardar_piso(self):
         P = self.pisos[self.piso]
         P["T"] = self.T_mapa_odom()
-        if SerializePoseGraph is None:
+        if SerializePoseGraph is None or not self.toolbox:
             return
         P["archivo"] = os.path.join(DATOS, "mapas", "piso_%d" % self.piso)
         r = self._llamar(self.cli_guardar, SerializePoseGraph.Request(filename=P["archivo"]), 20.0)
@@ -897,7 +899,8 @@ class Gestor(Node):
         p["usado"], p["destino"] = True, nuevo
         self.log("escalera LISTA (%s): piso %d -> %d" % (res.get("motivo", ""), self.piso, nuevo))
         # mapa del otro piso: nuevo = empezar de cero; conocido = recargar el suyo donde corresponde
-        if SerializePoseGraph is not None:
+        # (go2_slam3d lo hace solo: ve la altura del perro en el mapa 3D)
+        if SerializePoseGraph is not None and self.toolbox:
             P = self.pisos[nuevo]
             if conocido and P.get("archivo") and P.get("T") is not None:
                 x, y, yaw = res["pose_odom"]
@@ -1161,7 +1164,8 @@ class Gestor(Node):
             return self._orden_guardar_mapa(a)
         if o == "mapas":
             d = os.path.join(DATOS, "mapas")
-            nombres = sorted(f[:-10] for f in os.listdir(d) if f.endswith(".posegraph") and not f.startswith("piso_"))
+            fin = ".posegraph" if self.toolbox else ".slam3d.npz"
+            nombres = sorted(f[:-len(fin)] for f in os.listdir(d) if f.endswith(fin) and not f.startswith("piso_"))
             return True, ("mapas guardados: %s\nnavegar en uno: go2 lanzar mapa:=NOMBRE rviz:=true" % ", ".join(nombres)
                           if nombres else "no hay mapas guardados (go2 guardar_mapa NOMBRE)"), {"mapas": nombres}
         if o == "levantar":
@@ -1211,9 +1215,22 @@ class Gestor(Node):
         nombre = "".join(c for c in a[0] if c.isalnum() or c in "-_")
         if not nombre or nombre.startswith("piso_"):
             return False, "nombre invalido (letras, numeros, - y _)", {}
+        base = os.path.join(DATOS, "mapas", nombre)
+        if not self.toolbox:
+            m3 = Comando.Request()
+            m3.orden, m3.args = "guardar", [base + ".pcd"]
+            r3 = self._llamar(self.cli_mapa3d, m3, 20.0)
+            if r3 is None or not r3.ok:
+                return False, "no se guardo: %s" % (r3.mensaje if r3 is not None else "go2_slam3d no responde"), {}
+            self.mapa_sesion = nombre
+            self._guardar_puntos()
+            self.log("mapa '%s' guardado (%s), con %d puntos" % (nombre, base, len(self.puntos)))
+            return True, ("%s\nmapa '%s' con %d puntos (%s).\nPara navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
+                          "(pon al perro donde EMPEZASTE a mapear, o marca donde esta con '2D Pose Estimate' en RViz)"
+                          % (r3.mensaje, nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno",
+                             nombre)), {}
         if SerializePoseGraph is None:
             return False, "falta slam_toolbox", {}
-        base = os.path.join(DATOS, "mapas", nombre)
         r = self._llamar(self.cli_guardar, SerializePoseGraph.Request(filename=base), 25.0)
         if r is None or not os.path.exists(base + ".posegraph"):
             return False, "slam_toolbox no guardo el mapa (esta corriendo? hay mapa en RViz?)", {}

@@ -6,6 +6,7 @@
     ros2 launch go2_nav go2.launch.py vision:=false  # sin la camara/YOLO
     ros2 launch go2_nav go2.launch.py mapa:=casa     # NAVEGAR con un mapa guardado (go2 guardar_mapa casa):
                                                      # el perro solo se ubica en el mapa (no lo cambia)
+    ros2 launch go2_nav go2.launch.py slam:=toolbox  # el SLAM 2D de antes (slam_toolbox) en vez del 3D
     ros2 launch go2_nav go2.launch.py control:=false # sin el control PS4 (por defecto: si, si esta el paquete joy)
 
 Vision (go2_vision): corre con el Python de ~/.go2_nav/venv_vision (PyTorch + YOLO con CUDA, lo
@@ -33,7 +34,24 @@ MAPAS = os.path.expanduser("~/.go2_nav/mapas")
 
 
 def _slam(context):
-    """SLAM: mapeando (sin mapa:=) o ubicandose en un mapa guardado (mapa:=NOMBRE)."""
+    """SLAM: mapeando (sin mapa:=) o ubicandose en un mapa guardado (mapa:=NOMBRE).
+    slam:=go2 (por defecto) = go2_slam3d (nube 3D completa contra un mapa 3D; mapa 2D sin rayos sueltos)
+    slam:=toolbox = slam_toolbox 2D (el de antes) + go2_mapa3d."""
+    mapa = LaunchConfiguration("mapa").perform(context).strip()
+    if LaunchConfiguration("slam").perform(context) != "toolbox":
+        if mapa and not os.path.exists(os.path.join(MAPAS, mapa + ".slam3d.npz")):
+            hay = sorted(f[:-11] for f in os.listdir(MAPAS) if f.endswith(".slam3d.npz")) if os.path.isdir(MAPAS) else []
+            return [LogInfo(msg="!! NO EXISTE el mapa '%s' (%s.slam3d.npz). Mapas guardados: %s. "
+                                "Lanza sin mapa:= y guardalo con: go2 guardar_mapa %s"
+                                % (mapa, os.path.join(MAPAS, mapa), hay, mapa))]
+        return [Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+                     parameters=[{"mapa": mapa}] + _ajustes()[0])]
+    return _slam_toolbox(context) + [
+        Node(package="go2_nav", executable="mapa3d", name="go2_mapa3d", output="screen",
+             parameters=[{"mapa": mapa}] + _ajustes()[0])]
+
+
+def _slam_toolbox(context):
     import yaml
     share = get_package_share_directory("go2_nav")
     slam = os.path.join(share, "config", "slam.yaml")
@@ -96,7 +114,8 @@ def _vision_y_gestor(context):
     acciones.append(Node(package="go2_nav", executable="gestor", name="go2_gestor", output="screen",
                          parameters=[{"escaleras": LaunchConfiguration("escaleras").perform(context),
                                       "escaleras_vision": esc_vision,
-                                      "mapa": LaunchConfiguration("mapa").perform(context).strip()}] + _ajustes()[0]))
+                                      "mapa": LaunchConfiguration("mapa").perform(context).strip(),
+                                      "slam": LaunchConfiguration("slam").perform(context)}] + _ajustes()[0]))
     # control PS4: joy (lee el DualShock por USB/Bluetooth; espera si aun no esta conectado) + go2_ps4
     control = LaunchConfiguration("control").perform(context)
     if control == "true" or (control == "auto" and not sim):
@@ -148,6 +167,7 @@ def generate_launch_description():
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
+        DeclareLaunchArgument("slam", default_value="go2"),             # go2 (SLAM 3D) | toolbox (slam_toolbox 2D)
         DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
         DeclareLaunchArgument("control", default_value="auto"),         # control PS4: auto (no en sim) | true | false
 
@@ -168,9 +188,6 @@ def generate_launch_description():
              parameters=[{"robot_description": urdf}]),
         Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen", parameters=extra),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen", parameters=extra),
-        # mapa 3D denso a color (voxeles 5 cm, color = altura): /go2/mapa_3d; con mapa:=NOMBRE carga NOMBRE.pcd
-        Node(package="go2_nav", executable="mapa3d", name="go2_mapa3d", output="screen",
-             parameters=[{"mapa": LaunchConfiguration("mapa")}] + extra),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):
         # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE
         OpaqueFunction(function=_slam),

@@ -167,10 +167,28 @@ mitad a menos de 25 cm (el cuerpo), reloj del perro 3.5 s atrasado, y la IMU int
 **girada 122° en z** respecto a la nube: por eso go2_nav usa la odometría del propio perro
 (`/utlidar/robot_odom`) y no una odometría lidar-inercial con la IMU del L1.
 
+### SLAM 3D (`go2_slam3d`, por defecto)
+slam_toolbox solo veía un "scan" 2D ralo armado de la nube del L1: emparejaba mal y el mapa salía
+con paredes dobles y rayos sueltos. `go2_slam3d` usa la **nube 3D completa** (suelo, paredes,
+muebles, techo):
+1. la odometría del perro da el movimiento corto;
+2. cada nube se **alinea contra el mapa 3D** ya armado (punto-a-plano, x/y/z/giro; lo que no calza,
+   como una persona, casi no cuenta). Esa corrección es el TF `map->odom`;
+3. si una nube no calza bien (pocos puntos, salto grande) **se descarta**: sigue con la odometría y
+   esa nube no ensucia el mapa;
+4. el **mapa 2D** (`/map`, el de Nav2) sale de los obstáculos y el suelo ya alineados, con rayos
+   (log-odds): pared = vista muchas veces, sin rayos sueltos. Uno por piso (cambia solo).
+
+Volver a pasar por un lugar ya mapeado lo re-alinea: la deriva no se acumula. Probado sin ROS en un
+cuarto simulado con una odometría que deriva 1.5 m / 38° y una persona caminando: queda en 4 cm /
+0.1° (`pruebas/prueba_slam3d.py`). `go2 mapa3d` dice cómo va. El de antes: `go2 lanzar slam:=toolbox`.
+Con un mapa guardado (`mapa:=casa`) arranca donde empezaste a mapear; si no, usa **2D Pose
+Estimate** en RViz.
+
 ### Mapas: 2D limpio y 3D a color
-- **Mapa 2D** (slam_toolbox, `/map`): blanco = libre, negro = pared, gris = sin ver. Es el que usa
+- **Mapa 2D** (`/map`): blanco = libre, negro = pared, gris = sin ver. Es el que usa
   Nav2 y el que se guarda como imagen (`~/.go2_nav/mapas/NOMBRE.pgm`).
-- **Mapa 3D** (`/go2/mapa_3d`, nodo `go2_mapa3d`): todo lo que vio el lidar, en voxeles de 5 cm,
+- **Mapa 3D** (`/go2/mapa_3d`): todo lo que vio el lidar, en voxeles de 5 cm,
   **color = altura** (suelo azul → paredes verde/amarillo → techo rojo). Un punto que aparece en
   menos de 3 nubes (rebote, alguien que pasó) no queda. Se arma solo mientras el perro camina.
   ```

@@ -33,6 +33,9 @@
     go2 lanzar mapa:=casa rviz:=true   3) otro dia: navegar en ese mapa (no lo cambia)
     go2 ir A | go2 casa | "2D Goal Pose" en RViz
   go2 mapas             mapas guardados
+  SLAM: por defecto go2_slam3d (alinea TODA la nube 3D contra el mapa 3D; el mapa 2D sale de ahi).
+    go2 lanzar slam:=toolbox     el SLAM 2D de antes (slam_toolbox)
+    go2 mapa3d                   estado: correccion, inliers, cuanto hace que no calza
   MAPA 3D (denso, a color por altura; se arma solo mientras el perro camina; 'guardar_mapa' lo guarda):
     go2 ver3d             RViz en 3D (orbita) con el mapa 3D en vivo
     go2 ver3d casa        mira ~/.go2_nav/mapas/casa.pcd (sin el perro)
