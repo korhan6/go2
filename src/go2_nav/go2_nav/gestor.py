@@ -203,11 +203,46 @@ class Gestor(Node):
         self.create_timer(0.5, self.lazo, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(0.5, self.publicar_estado, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(1.0, self.publicar_explorado, callback_group=MutuallyExclusiveCallbackGroup())
+        # VIGIA de Nav2: cada costmap publica la huella del perro con el sello de SU ultimo TF. Si ese
+        # sello se queda viejo, ese servidor dejo de recibir el TF (planifica desde donde el perro
+        # estaba hace rato). Se reinicia ese proceso (respawn + lifecycle_manager lo vuelve a activar)
+        from geometry_msgs.msg import PolygonStamped
+        self.huellas = {}            # nombre -> (t_llegada, edad del sello)
+        self.t_reinicio = {}
+        for top, proc in (("/local_costmap/published_footprint", "nav2_controller/controller_server"),
+                          ("/global_costmap/published_footprint", "nav2_planner/planner_server")):
+            self.create_subscription(PolygonStamped, top, lambda m, k=proc: self.cb_huella(k, m), 5,
+                                     callback_group=MutuallyExclusiveCallbackGroup())
+        self.create_timer(1.0, self.vigia_nav2, callback_group=MutuallyExclusiveCallbackGroup())
         if self.mapa_fijo:
             self.log("go2_gestor listo: NAVEGANDO en el mapa guardado '%s' (%d puntos: %s)"
                      % (self.mapa_fijo, len(self.puntos), ", ".join(sorted(self.puntos)) or "-"))
         else:
             self.log("go2_gestor listo: MAPEANDO (escaleras: %s, camara: %s)" % (self.politica, self.esc_vision))
+
+    # ------------------------------------------------------------------ vigia de Nav2
+    def cb_huella(self, proc, m):
+        ahora = self.get_clock().now().nanoseconds * 1e-9
+        edad = ahora - (m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
+        prev = self.huellas.get(proc)
+        viejo_desde = prev[2] if (prev and prev[1] > 2.0) else None
+        if edad > 2.0 and viejo_desde is None:
+            viejo_desde = time.monotonic()
+        self.huellas[proc] = (time.monotonic(), edad, viejo_desde if edad > 2.0 else None)
+
+    def vigia_nav2(self):
+        import subprocess
+        for proc, (t, edad, desde) in list(self.huellas.items()):
+            if desde is None or time.monotonic() - t > 3.0:
+                continue
+            if time.monotonic() - desde < 4.0 or time.monotonic() - self.t_reinicio.get(proc, 0.0) < 40.0:
+                continue
+            self.t_reinicio[proc] = time.monotonic()
+            self.log("!! VIGIA: %s ve al perro con TF de hace %.0f s (dejo de recibir /tf): lo reinicio"
+                     % (proc.split("/")[-1], edad))
+            self.get_logger().error("VIGIA: reinicio %s (TF %.0f s viejo)" % (proc, edad))
+            subprocess.run(["pkill", "-f", "lib/%s" % proc])
+            self.huellas.pop(proc, None)
 
     # ------------------------------------------------------------------ utilidades
     def log(self, txt):

@@ -225,6 +225,7 @@ class Limpiador(Node):
         self.mem_t = np.zeros(0, np.float64)
         self.mem_t0 = np.zeros(0, np.float64)      # cuando se vio por primera vez
         self.pose = None            # (x, y, z, yaw) del perro en odom
+        self.pose_stamp = None
         self.suelo = None
         self.hist_caidas = collections.deque(maxlen=6)     # (puntos bajo el suelo, suelo xy) por nube
         self.hist_alto = collections.deque(maxlen=8)       # celdas con algo arriba del piso (reflejos)
@@ -279,12 +280,17 @@ class Limpiador(Node):
     def cb_odom(self, m):
         p = m.pose.pose.position
         self.pose = (p.x, p.y, p.z, yaw_de_quat(m.pose.pose.orientation))
+        self.pose_stamp = m.header.stamp
 
     def cb_nube(self, msg):
         if self.pose is None:
             return
         t0 = time.perf_counter()
-        stamp = self.get_clock().now().to_msg()
+        # sello = el de la pose usada (= el del TF odom->base_link que ya publico el driver), NO "ahora".
+        # Con "ahora" cada nube llegaba a los costmaps de Nav2 ANTES que su TF: el filtro de TF las
+        # dejaba en espera y el hilo del TF de controller_server/planner_server se trababa a los
+        # 30-50 s (huella del perro con 115 s de atraso -> "Start occupied", "footprint not available")
+        stamp = self.pose_stamp
         xyz = leer_xyz(msg)
         x, y, z, yaw = self.pose
         if msg.header.frame_id not in ("odom", "map", "world", ""):
