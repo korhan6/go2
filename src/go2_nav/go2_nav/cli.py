@@ -1200,7 +1200,7 @@ sudo apt-get install -y libgtsam-points-dev ros-jazzy-glim-ros && echo "GLIM CPU
         d = os.path.expanduser("~/go2_bags/%s" % time.strftime("%Y%m%d_%H%M%S"))
         os.makedirs(os.path.dirname(d), exist_ok=True)
         print("grabando en %s  (Ctrl+C para terminar)" % d)
-        os.execvp("ros2", ["ros2", "bag", "record", "-o", d, "/utlidar/cloud", "/utlidar/cloud_deskewed",
+        os.execvp("ros2", ["ros2", "bag", "record", "--max-bag-size", "300000000", "-o", d, "/utlidar/cloud", "/utlidar/cloud_deskewed",
                            "/utlidar/robot_odom", "/utlidar/imu", "/odom", "/go2/nube_sin_fantasmas",
                            "/go2/obstaculos", "/go2/suelo", "/go2/slam_estado", "/tf", "/tf_static"])
     rclpy.init()
