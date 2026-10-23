@@ -265,9 +265,9 @@ def probar_mov(nodo):
     return 0
 
 
-def _guardar_ajuste_odom(fuente, k):
-    """~/.go2_nav/ajustes.yaml: go2_driver.fuente_odom / escala_odom (y aparta movimiento.json, que
-    se midio con la odometria mala)."""
+def _guardar_ajuste_odom(fuente, k, k_lidar=1.0):
+    """~/.go2_nav/ajustes.yaml: go2_driver.fuente_odom / escala_odom, go2_nube.escala_lidar (y si la
+    odometria estaba mal, aparta movimiento.json, que se midio con ella)."""
     import os
     import yaml
     ruta = os.path.expanduser("~/.go2_nav/ajustes.yaml")
@@ -279,15 +279,17 @@ def _guardar_ajuste_odom(fuente, k):
     nodo = d.setdefault("go2_driver", {}).setdefault("ros__parameters", {})
     nodo["fuente_odom"] = fuente
     nodo["escala_odom"] = round(float(k), 3)
+    d.setdefault("go2_nube", {}).setdefault("ros__parameters", {})["escala_lidar"] = round(float(k_lidar), 3)
     os.makedirs(os.path.dirname(ruta), exist_ok=True)
     with open(ruta, "w") as f:
         yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
     mov = os.path.expanduser("~/.go2_nav/movimiento.json")
-    if os.path.exists(mov):
+    if os.path.exists(mov) and abs(k - 1.0) > 0.06:
         os.replace(mov, mov.replace(".json", "_odometria_mala.json"))
         print("aparte ~/.go2_nav/movimiento.json (se midio con la odometria mala: hacia que el perro\n"
               "camine mas rapido de lo que pide Nav2). Si hace falta, 'go2 calibrar_mov' de nuevo.")
-    print("guardado en %s: fuente_odom=%s escala_odom=%.3f  -> relanza 'go2 lanzar'" % (ruta, fuente, k))
+    print("guardado en %s: fuente_odom=%s escala_odom=%.3f escala_lidar=%.3f  -> relanza 'go2 lanzar'"
+          % (ruta, fuente, k, k_lidar))
 
 
 def escala(nodo):
@@ -315,13 +317,18 @@ def escala(nodo):
         od["lidar"] = (p.x, p.y, yaw_q(q.x, q.y, q.z, q.w))
 
     def cb_patas(m):
+        od["altura"] = float(m.body_height)
         q = m.imu_state.quaternion
         od["patas"] = (float(m.position[0]), float(m.position[1]), yaw_q(q[1], q[2], q[3], q[0]))
+
+    sensor = []
 
     def cb_cruda(m):
         d, _ = leer_campos(m, ["x", "y", "z"])
         p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
-        c = p[np.isfinite(p).all(axis=1)] @ R_ext.T + t_ext
+        p = p[np.isfinite(p).all(axis=1)]
+        sensor.append(p)
+        c = p @ R_ext.T + t_ext
         cuerpo = (np.abs(c[:, 0]) < 0.45) & (np.abs(c[:, 1]) < 0.25) & (c[:, 2] > -0.45)
         crudas.append(c[~cuerpo])
     nodo.create_subscription(Odometry, "/utlidar/robot_odom", cb_lidar, qos_profile_sensor_data)
@@ -365,6 +372,37 @@ def escala(nodo):
           "camino libre. 2) GIRO: despues gira ~70 grados en el sitio (1 m libre alrededor).\n"
           "Empieza en 3 s (Ctrl+C cancela)")
     esperar(3.0)
+    # ---- 0) escala del LIDAR: altura del L1 sobre el piso (plano en el marco del sensor: no depende
+    #         de la extrinseca) contra la altura del cuerpo que da el perro (cinematica de las patas)
+    del sensor[:]
+    esperar(2.0)
+    s_lidar = None
+    if sensor and od.get("altura"):
+        P_ = np.concatenate(sensor)
+        Cb = P_ @ R_ext.T + t_ext
+        r = np.hypot(Cb[:, 0], Cb[:, 1])
+        sel = (Cb[:, 2] < -0.12) & (r > 0.45) & (r < 2.5)               # el piso alrededor, sin el cuerpo
+        if sel.sum() > 100:
+            F = P_[sel]
+            mejor = None
+            rng = np.random.default_rng(0)
+            for _ in range(200):                                        # RANSAC de un plano
+                a, b, c3 = F[rng.choice(len(F), 3, replace=False)]
+                n = np.cross(b - a, c3 - a)
+                if np.linalg.norm(n) < 1e-6:
+                    continue
+                n /= np.linalg.norm(n)
+                ins = np.abs((F - a) @ n) < 0.02
+                if mejor is None or ins.sum() > mejor[0]:
+                    mejor = (int(ins.sum()), n, a)
+            if mejor and mejor[0] > 50:
+                h_med = abs(float(mejor[2] @ mejor[1]))                 # distancia del sensor al plano
+                h_esp = od["altura"] - 0.046825                         # el L1 esta 4.7 cm bajo el centro
+                s_lidar = h_med / h_esp
+                print("altura del L1 sobre el piso: medida %.3f m, esperada %.3f m (cuerpo a %.3f m)"
+                      " -> el lidar mide el %.0f %%" % (h_med, h_esp, od["altura"], 100 * s_lidar))
+    if s_lidar is None:
+        print("(no pude medir la altura del lidar sobre el piso: piso plano alrededor?)")
     # ---- avance
     d0 = pared(juntar())
     if d0 is None or d0 < 1.2:
@@ -458,21 +496,31 @@ def escala(nodo):
     f = min(validas, key=lambda k: error(validas[k]))
     ka, kg = validas[f]
     print()
+    k_lidar = 1.0
+    if s_lidar is not None and abs(s_lidar - 1) > 0.10:
+        # el LIDAR esta mal de escala: el avance real es lo que midio el lidar / s
+        k_lidar = 1.0 / s_lidar
+        ka = ka * s_lidar
+        print("!! el LIDAR mide las distancias al %.0f %%: lo corrijo (escala_lidar %.3f). Con eso, la\n"
+              "   odometria mide el %.0f %% del avance real." % (100 * s_lidar, k_lidar, 100 * ka))
+    elif s_lidar is not None:
+        print("el lidar mide bien las distancias (altura sobre el piso OK).")
     if kg is not None and abs(kg - 1) > 0.10:
         print("!! el GIRO de la odometria '%s' tambien esta mal (%.0f %%): la escala sola no lo arregla.\n"
               "   Mandame este resultado." % (f, 100 * kg))
-    if abs(ka - 1) <= 0.06 and (kg is None or abs(kg - 1) <= 0.10):
+    if abs(ka - 1) <= 0.08 and (kg is None or abs(kg - 1) <= 0.10):
         print("la odometria '%s' esta BIEN." % f)
         k = 1.0
     else:
         k = 1.0 / ka
         print("mejor: odometria '%s' con escala %.3f (mide el %.0f %% del avance real)" % (f, k, 100 * ka))
     try:
-        si = input("guardo fuente_odom=%s escala_odom=%.3f en ~/.go2_nav/ajustes.yaml? [s/N] " % (f, k))
+        si = input("guardo fuente_odom=%s escala_odom=%.3f escala_lidar=%.3f en ~/.go2_nav/ajustes.yaml? [s/N] "
+                   % (f, k, k_lidar))
     except EOFError:
         si = ""
     if si.strip().lower().startswith("s"):
-        _guardar_ajuste_odom(f, k)
+        _guardar_ajuste_odom(f, k, k_lidar)
     return 0
 
 

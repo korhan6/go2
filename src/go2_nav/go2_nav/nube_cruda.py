@@ -71,6 +71,8 @@ class NubeCruda(Node):
         xyz = list(P("extrinseca_xyz", [0.28945, 0.0, -0.046825]).value)
         rpy = list(P("extrinseca_rpy", [0.0, 2.8782, 0.0]).value)
         self.acumular = int(P("acumular", 3).value)
+        # escala de las distancias del L1 ('go2 escala' la mide con la altura del lidar sobre el piso)
+        self.escala = float(P("escala_lidar", 1.0).value)
         self.r_min = P("rango_min", 0.05).value
         self.r_max = P("rango_max", 20.0).value
         self.R_ext = rot_rpy(*rpy)
@@ -87,8 +89,8 @@ class NubeCruda(Node):
         self.est = {"n": 0, "puntos": 0, "en_cuerpo_pct": 0.0, "sin_odom": 0, "ms": 0.0, "sin_tiempo": False,
                     "relojes_distintos": False}
         self.create_timer(1.0, self.publicar_estado)
-        self.get_logger().info("go2_nube: %s (crudo) -> /go2/nube_odom con la odometria del perro, %d vueltas"
-                               % (self.topico, self.acumular))
+        self.get_logger().info("go2_nube: %s (crudo) -> /go2/nube_odom con la odometria del perro, %d vueltas, "
+                               "escala del lidar %.3f" % (self.topico, self.acumular, self.escala))
 
     def cb_odom(self, m):
         t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
@@ -107,7 +109,7 @@ class NubeCruda(Node):
         ok = np.isfinite(p).all(axis=1)
         r = np.linalg.norm(p, axis=1)
         ok &= (r > self.r_min) & (r < self.r_max)
-        p = p[ok]
+        p = p[ok] * self.escala
         if len(p) == 0:
             return
         ts = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
