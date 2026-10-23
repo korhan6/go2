@@ -201,7 +201,9 @@ class Registro(object):
 
 # ---------------------------------------------------------------- mapa 2D (ocupacion)
 L_HIT, L_MISS, L_MISS_SUELO, L_MIN, L_MAX = 0.85, -0.40, -0.15, -2.0, 3.5
-L_OCUP, L_LIBRE = 0.80, -0.35
+# ocupada = vista en >= 2 nubes (con 1 sola, un rebote suelto era "pared": el cuarto se llenaba de
+# puntitos negros, Nav2 los inflaba y no encontraba ruta)
+L_OCUP, L_LIBRE = 1.6, -0.35
 
 
 class Rejilla(object):

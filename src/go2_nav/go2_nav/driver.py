@@ -113,6 +113,7 @@ class Driver(Node):
         self.fuente_odom = p("fuente_odom", "lidar").value
         self.escala_odom = float(p("escala_odom", 1.0).value)
         self.odom0 = None
+        self.t_pub_odom = 0.0
         self.t_sport_rapido = 0.0
         self.pub_odom_perro = self.create_publisher(Odometry, "/go2/odom_perro", 50)
         sd = qos_profile_sensor_data
@@ -189,6 +190,10 @@ class Driver(Node):
     def publicar_odom(self, stamp_perro, pos, quat, vlin, vang):
         """/odom + TF odom->base_link (hora de la laptop) y /go2/odom_perro (hora del perro, para
         go2_nube). escala_odom corrige la escala de x, y ('go2 escala' la mide contra el lidar)."""
+        ahora_m = time.monotonic()
+        if ahora_m - self.t_pub_odom < 0.01:
+            return                       # /sportmodestate llega a ~500 Hz: TF a 100 Hz basta (y no ahoga a Nav2)
+        self.t_pub_odom = ahora_m
         if self.odom0 is None:
             self.odom0 = pos
         k = self.escala_odom
