@@ -164,14 +164,17 @@ class Slam3D(Node):
                 self.reubicar -= 1
             if ok:
                 self.T = Tn
+        # el mapa se dibuja SIEMPRE (con la correccion que haya): una nube descartada solo no cambia
+        # la correccion. Antes una nube descartada no entraba al mapa -> en un cuarto nuevo (poco que
+        # calce) o con varias descartadas seguidas el mapa se quedaba congelado
+        if not self.fijo:
+            self.reg.insertar(aplicar(self.T, p[d < self.alcance]))
+        self.ver_piso(base)
         if ok:
             self.ult_ok = ahora
             self.base_ok = base
             self.seguidas_mal = 0
             self.est["aceptadas"] += 1
-            if not self.fijo:
-                self.reg.insertar(aplicar(self.T, p[d < self.alcance]))
-            self.ver_piso(base)
         else:
             self.seguidas_mal += 1
             self.est["descartadas"] += 1
@@ -219,7 +222,7 @@ class Slam3D(Node):
 
     # ---------------------------------------------------------------- mapa 2D
     def cb_obst(self, m):
-        if self.fijo or self.pausa or time.monotonic() - self.ult_ok > 1.0:
+        if self.fijo or self.pausa or time.monotonic() - self.t_nube > 1.0:
             return
         if self.arranque > 0:
             return
