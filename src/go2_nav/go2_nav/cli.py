@@ -373,9 +373,14 @@ def escala(nodo):
         print("el perro esta %s: 'go2 %s' y repite" % ("ACOSTADO" if est.get("acostado") else "BLOQUEADO",
                                                     "levantar" if est.get("acostado") else "desbloquear"))
         return 1
+    t = time.monotonic()
+    while time.monotonic() - t < 15.0 and not (("lidar" in od or "patas" in od) and crudas):
+        rclpy.spin_once(nodo, timeout_sec=0.1)          # con todo go2_nav corriendo, DDS tarda en encontrar
     fuentes = [k for k in ("lidar", "patas") if k in od]
     if not fuentes or not crudas:
-        print("no llegan la odometria del perro o /utlidar/cloud: go2_nav corriendo? cable?")
+        print("en 15 s no llego: %s" % ", ".join(n for n, ok in (
+            ("/utlidar/robot_odom", "lidar" in od), ("/lf/sportmodestate", "patas" in od),
+            ("/utlidar/cloud", bool(crudas))) if not ok))
         return 1
     print("MEDIR LA ODOMETRIA contra el lidar crudo. 1) AVANCE: pon al perro MIRANDO a una pared a 1.5-3 m,\n"
           "camino libre. 2) GIRO: despues gira ~70 grados en el sitio (1 m libre alrededor).\n"
