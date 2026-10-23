@@ -336,10 +336,13 @@ def escala(nodo):
     nodo.create_subscription(PointCloud2, "/utlidar/cloud", cb_cruda, qos_profile_sensor_data)
     pub = nodo.create_publisher(Twist, "cmd_vel_prioridad", 10)
     cli = nodo.create_client(Comando, "/go2/comando")
-    if cli.wait_for_service(timeout_sec=3.0):
-        r = Comando.Request()
-        r.orden = "parar"
-        rclpy.spin_until_future_complete(nodo, cli.call_async(r), timeout_sec=5.0)
+    if not cli.wait_for_service(timeout_sec=3.0):
+        print("go2_nav no esta corriendo (nadie le manda moverse al perro). En otra terminal:\n"
+              "  go2 lanzar rviz:=true\ny cuando arranque, repite 'go2 escala'.")
+        return 1
+    r = Comando.Request()
+    r.orden = "parar"
+    rclpy.spin_until_future_complete(nodo, cli.call_async(r), timeout_sec=5.0)
 
     def esperar(seg, tw=None):
         t = time.monotonic()
