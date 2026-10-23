@@ -17,7 +17,7 @@ import time
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -58,6 +58,9 @@ class Slam3D(Node):
         self.dz_piso = P("dz_piso", 0.8).value
         self.min_vistas = P("min_vistas_3d", 2).value
         mapa = P("mapa", "").value.strip()
+        # correccion: propia (alinea cada nube contra el mapa 3D) | glim (map->odom sale del mapa
+        # global de GLIM, con cierre de lazos; aca solo se dibujan los mapas 2D/3D)
+        self.correccion = P("correccion", "propia").value
 
         self.reg = Registro()
         self.T = (0.0, 0.0, 0.0, 0.0)                         # map -> odom
@@ -102,6 +105,12 @@ class Slam3D(Node):
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self.cb_pose_inicial, 1,
                                  callback_group=pesado)
         self.create_service(Comando, "/go2/mapa3d", self.srv, callback_group=pesado)
+        if self.correccion == "glim" and not self.fijo:
+            self.odom_buf = []                                 # (t_perro, x, y, z, yaw) de NUESTRA odom
+            self.create_subscription(Odometry, "/go2/odom_perro", self.cb_odom_perro, 50, callback_group=liviano)
+            self.create_subscription(Odometry, P("topico_glim_corregido", "/glim_ros/odom_corrected").value,
+                                     self.cb_glim_corregido, 10, callback_group=liviano)
+            self.t_glim = 0.0
         self.create_timer(0.05, self.publicar_tf, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(0.5, self.lazo, callback_group=pesado)
         self.create_timer(1.0, self.publicar_estado, callback_group=liviano)
@@ -115,6 +124,32 @@ class Slam3D(Node):
             return tf_a_T(self.tfb.lookup_transform(padre, hijo, Time()))
         except Exception:
             return None
+
+    def cb_odom_perro(self, m):
+        q, p = m.pose.pose.orientation, m.pose.pose.position
+        t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        self.odom_buf.append((t, p.x, p.y, p.z, yaw_de_quat(q)))
+        if len(self.odom_buf) > 400:
+            del self.odom_buf[:100]
+
+    def cb_glim_corregido(self, m):
+        """GLIM: pose de la IMU en 'map' (con cierre de lazos). map->odom = base_map * base_odom^-1,
+        con nuestra odometria en el MISMO instante (mismo reloj del perro)."""
+        if not self.odom_buf:
+            return
+        t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        o = min(self.odom_buf, key=lambda r: abs(r[0] - t))
+        if abs(o[0] - t) > 0.05:
+            return
+        q, p = m.pose.pose.orientation, m.pose.pose.position
+        yaw = yaw_de_quat(q)
+        # base = imu + R * (0.02557, 0, -0.04232) (la IMU no gira respecto al cuerpo)
+        c, s_ = math.cos(yaw), math.sin(yaw)
+        base_map = (p.x + c * 0.02557, p.y + s_ * 0.02557, p.z - 0.04232, yaw)
+        T = componer(base_map, inversa(o[1:]))
+        self.T = (T[0], T[1], T[2], T[3])
+        self.t_glim = time.monotonic()
+        self.ult_ok = time.monotonic()
 
     def publicar_tf(self):
         t = TransformStamped()
@@ -141,7 +176,10 @@ class Slam3D(Node):
             return
         d = np.hypot(p[:, 0] - lid[0], p[:, 1] - lid[1])
         T0 = self.T
-        if self.arranque > 0 and not self.fijo:
+        if self.correccion == "glim" and not self.fijo:
+            ok, info = True, {"inliers": 0, "frac": 1.0, "rms": 0.0, "motivo": ""}
+            self.arranque = 0
+        elif self.arranque > 0 and not self.fijo:
             ok, info = True, {"inliers": len(p), "frac": 1.0, "rms": 0.0}
             self.arranque -= 1
         else:

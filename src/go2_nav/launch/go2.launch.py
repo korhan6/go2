@@ -38,6 +38,8 @@ def _slam(context):
     slam:=go2 (por defecto) = go2_slam3d (nube 3D completa contra un mapa 3D; mapa 2D sin rayos sueltos)
     slam:=toolbox = slam_toolbox 2D (el de antes) + go2_mapa3d."""
     mapa = LaunchConfiguration("mapa").perform(context).strip()
+    if LaunchConfiguration("slam").perform(context) == "glim":
+        return _glim(context, mapa)
     if LaunchConfiguration("slam").perform(context) != "toolbox":
         if mapa and not os.path.exists(os.path.join(MAPAS, mapa + ".slam3d.npz")):
             hay = sorted(f[:-11] for f in os.listdir(MAPAS) if f.endswith(".slam3d.npz")) if os.path.isdir(MAPAS) else []
@@ -49,6 +51,48 @@ def _slam(context):
     return _slam_toolbox(context) + [
         Node(package="go2_nav", executable="mapa3d", name="go2_mapa3d", output="screen",
              parameters=[{"mapa": mapa}] + _ajustes()[0])]
+
+
+def _glim(context, mapa):
+    """slam:=glim -> GLIM (koide3): odometria lidar-inercial (L1 crudo sin el cuerpo + IMU del CUERPO)
+    y mapa global con cierre de lazos, en la GPU si esta instalado con CUDA. go2_slam3d sigue
+    dibujando los mapas 2D (Nav2) y 3D con la correccion de GLIM. Con mapa:=NOMBRE: GLIM solo
+    odometria y go2_slam3d se ubica en el mapa guardado."""
+    from go2_nav import glim_config
+    try:
+        from ament_index_python.packages import get_package_prefix
+        get_package_share_directory("glim_ros")
+        origen = os.path.join(get_package_share_directory("glim"), "config")
+        gpu = glim_config.hay_gpu(get_package_prefix("glim"))
+    except Exception as e:
+        return [LogInfo(msg="!! GLIM NO esta instalado (%s): 'go2 instalar_glim'. Sigo con slam:=go2" % e),
+                Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+                     parameters=[{"mapa": mapa}] + _ajustes()[0])]
+    modo = "odometria" if mapa else "mapeo"
+    destino = glim_config.generar(origen, os.path.expanduser("~/.go2_nav/glim/" + modo), modo, gpu)
+    if mapa and not os.path.exists(os.path.join(MAPAS, mapa + ".slam3d.npz")):
+        return [LogInfo(msg="!! NO EXISTE el mapa '%s'" % mapa)]
+    return [
+        LogInfo(msg="go2_nav: GLIM (%s, %s) con la IMU del cuerpo; config en %s"
+                    % ("GPU CUDA" if gpu else "CPU", modo, destino)),
+        Node(package="go2_nav", executable="imu", name="go2_imu", output="screen"),
+        Node(package="glim_ros", executable="glim_rosnode", name="glim_ros", output="screen",
+             parameters=[{"config_path": destino}],
+             remappings=[("/tf", "/glim/tf"), ("/tf_static", "/glim/tf_static")]),
+        Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+             parameters=[{"mapa": mapa, "correccion": "propia" if mapa else "glim"}] + _ajustes()[0]),
+    ]
+
+
+def _driver(context):
+    extra = _ajustes()[0]
+    if LaunchConfiguration("slam").perform(context) == "glim":
+        try:
+            get_package_share_directory("glim_ros")
+            extra = extra + [{"fuente_odom": "glim"}]             # GLIM manda; las patas de respaldo
+        except Exception:
+            pass
+    return [Node(package="go2_nav", executable="driver", name="go2_driver", output="screen", parameters=extra)]
 
 
 def _slam_toolbox(context):
@@ -225,7 +269,7 @@ def generate_launch_description():
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
         DeclareLaunchArgument("nube", default_value="cruda"),
         DeclareLaunchArgument("obstaculos", default_value="2d"),        # 2d | stvl (voxeles 3D que se olvidan)           # cruda (go2_nube) | unitree (cloud_deskewed)
-        DeclareLaunchArgument("slam", default_value="go2"),             # go2 (SLAM 3D) | toolbox (slam_toolbox 2D)
+        DeclareLaunchArgument("slam", default_value="go2"),             # go2 (SLAM 3D) | glim (GLIM, GPU) | toolbox
         DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
         DeclareLaunchArgument("control", default_value="auto"),         # control PS4: auto (no en sim) | true | false
 
@@ -235,7 +279,7 @@ def generate_launch_description():
                           "puntos_por_nube": ParameterValue(LaunchConfiguration("puntos_sim"), value_type=int)}],
              condition=IfCondition(sim)),
         LogInfo(msg=aviso or "go2_nav: sin ajustes propios (%s no existe): valores del paquete" % AJUSTES),
-        Node(package="go2_nav", executable="driver", name="go2_driver", output="screen", parameters=extra),
+        OpaqueFunction(function=_driver),
         # donde esta el L1 en el perro (URDF del Go2: 0.29 m adelante del centro, en la cabeza).
         # Los costmaps borran obstaculos con rayos desde el sensor: desde base_link, cada rayo a un
         # punto detras de un marco de puerta "atravesaba" el marco y lo borraba

@@ -22,6 +22,7 @@
   go2 subir | bajar     toma a mano la escalera que tiene delante (subir = de frente;
                         bajar = gira 180 y baja SIEMPRE en reversa)
   go2 probar_mov        mide si el perro HACE lo que se le pide (gira 3 s y avanza 2 s; 1 m libre delante)
+  go2 instalar_glim     instala GLIM (con GPU CUDA si se puede); despues: go2 lanzar slam:=glim rviz:=true
   go2 vision_trt        convierte YOLO a TensorRT FP16 (la RTX lo corre 2-3 veces mas rapido; una vez)
   go2 grabar            graba lo del lidar y la odometria (~/go2_bags/FECHA) para afinar el SLAM sin el perro
   go2 escala            mide si la odometria mide bien las distancias: frente a una pared avanza ~0.6 m y
@@ -995,6 +996,36 @@ def main():
         return 0
     if args[0] == "ver3d":
         return ver3d(args[1:])
+    if args[0] == "instalar_glim":
+        # PPA oficial de koide3 (Ubuntu 24.04). Con GPU NVIDIA intenta la version CUDA; si apt no
+        # puede (faltan las librerias CUDA de NVIDIA), instala la de CPU
+        import os
+        script = r"""
+set -e
+K=$(mktemp)
+curl -fsSL https://koide3.github.io/ppa/ubuntu2404/KEY.gpg -o "$K"
+if grep -q "BEGIN PGP" "$K"; then gpg --dearmor < "$K" > "$K.gpg"; else cp "$K" "$K.gpg"; fi
+gpg --show-keys "$K.gpg" >/dev/null
+sudo install -m 644 "$K.gpg" /etc/apt/trusted.gpg.d/koide3_ppa.gpg
+echo "deb [signed-by=/etc/apt/trusted.gpg.d/koide3_ppa.gpg] https://koide3.github.io/ppa/ubuntu2404 ./" | sudo tee /etc/apt/sources.list.d/koide3_ppa.list >/dev/null
+rm -f "$K" "$K.gpg"
+sudo apt-get update
+sudo apt-get install -y libiridescence-dev libboost-all-dev libglfw3-dev libmetis-dev
+set +e
+CU=$(apt-cache search --names-only '^ros-jazzy-glim-ros-cuda' | awk '{print $1}' | sort -V | tail -1)
+if command -v nvidia-smi >/dev/null && [ -n "$CU" ]; then
+  V=${CU#ros-jazzy-glim-ros-}
+  echo "== GLIM con GPU ($V)"
+  if sudo apt-get install -y libgtsam-points-$V-dev "$CU"; then echo "GLIM GPU instalado"; exit 0; fi
+  echo "== faltan librerias CUDA: agrego el repositorio CUDA de NVIDIA y reintento (descarga grande)"
+  wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
+    && sudo dpkg -i /tmp/cuda-keyring.deb && sudo apt-get update \
+    && sudo apt-get install -y libgtsam-points-$V-dev "$CU" && { echo "GLIM GPU instalado"; exit 0; }
+  echo "!! la version CUDA no se pudo instalar. Instalo la de CPU"
+fi
+sudo apt-get install -y libgtsam-points-dev ros-jazzy-glim-ros && echo "GLIM CPU instalado"
+"""
+        os.execvp("bash", ["bash", "-c", script])
     if args[0] == "vision_trt":
         import os
         py = os.path.expanduser("~/.go2_nav/venv_vision/bin/python")

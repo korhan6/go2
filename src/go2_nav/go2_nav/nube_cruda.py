@@ -25,7 +25,7 @@ import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import String
 
 from .nube import _DT, crear_nube
@@ -81,6 +81,7 @@ class NubeCruda(Node):
         self.vueltas = collections.deque(maxlen=max(1, self.acumular))
         self.pub = self.create_publisher(PointCloud2, "/go2/nube_odom", qos_profile_sensor_data)
         self.pub_est = self.create_publisher(String, "/go2/nube_estado", 1)
+        self.pub_l1 = self.create_publisher(PointCloud2, "/go2/l1_sin_cuerpo", qos_profile_sensor_data)
         # la odometria que publica el driver (fuente y escala elegidas con 'go2 escala'), con la hora
         # del PERRO: la misma que la nube -> se interpola por punto
         self.create_subscription(Odometry, P("topico_odom", "/go2/odom_perro").value, self.cb_odom,
@@ -99,12 +100,40 @@ class NubeCruda(Node):
             return
         self.odom.append((t, p.x, p.y, p.z, q.x, q.y, q.z, q.w))
 
+    def publicar_sin_cuerpo(self, m, d, nombres):
+        """Para GLIM: la misma nube (marco del L1, sello y 'time' originales) SIN los puntos del perro
+        (patas, cuerpo: se mueven con el y frenarian la odometria). Va antes de todo: GLIM da la
+        odometria, asi que esto no puede esperar a tenerla."""
+        p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
+        ok = np.isfinite(p).all(axis=1)
+        c = (p * self.escala) @ self.R_ext.T + self.t_ext
+        cuerpo = ((c[:, 0] > -0.48) & (c[:, 0] < 0.45) & (np.abs(c[:, 1]) < 0.26)
+                  & (c[:, 2] > -0.40) & (c[:, 2] < 0.20))
+        ok &= ~cuerpo
+        n = int(ok.sum())
+        a = np.zeros((n, 5), np.float32)
+        a[:, :3] = (p[ok] * self.escala).astype(np.float32)
+        if "intensity" in nombres:
+            a[:, 3] = d["intensity"][ok]
+        if "time" in nombres:
+            a[:, 4] = d["time"][ok]
+        o = PointCloud2()
+        o.header = m.header
+        o.height, o.width = 1, n
+        o.fields = [PointField(name=k, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+                    for i, k in enumerate(("x", "y", "z", "intensity", "time"))]
+        o.is_bigendian, o.point_step, o.row_step, o.is_dense = False, 20, 20 * n, True
+        o.data = a.tobytes()
+        self.pub_l1.publish(o)
+
     def cb_nube(self, m):
         t0 = time.perf_counter()
+        d, nombres = leer_campos(m, ["x", "y", "z", "intensity", "time"])
+        if self.pub_l1.get_subscription_count() > 0:
+            self.publicar_sin_cuerpo(m, d, nombres)
         if len(self.odom) < 2:
             self.est["sin_odom"] += 1
             return
-        d, nombres = leer_campos(m, ["x", "y", "z", "time"])
         p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
         ok = np.isfinite(p).all(axis=1)
         r = np.linalg.norm(p, axis=1)

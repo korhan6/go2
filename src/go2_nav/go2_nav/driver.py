@@ -122,10 +122,16 @@ class Driver(Node):
         self.escala_odom = float(p("escala_odom", 1.0).value)
         self.odom0 = None
         self.t_pub_odom = 0.0
+        self.fuente_actual = None
+        self.ultima_pose = None
+        self.enganche = {}
+        self.t_glim = 0.0
         self.t_sport_rapido = 0.0
         self.pub_odom_perro = self.create_publisher(Odometry, "/go2/odom_perro", 50)
         sd = qos_profile_sensor_data
         self.create_subscription(Odometry, "/utlidar/robot_odom", self.cb_odom, sd)
+        if self.fuente_odom == "glim":
+            self.create_subscription(Odometry, p("topico_glim", "/glim_ros/odom").value, self.cb_glim, 50)
         self.create_subscription(SportModeState, "/sportmodestate", self.cb_sport_rapido, sd)
         self.create_subscription(SportModeState, "/lf/sportmodestate", self.cb_sport, sd)
         self.create_subscription(LowState, "/lf/lowstate", self.cb_low, sd)
@@ -193,21 +199,43 @@ class Driver(Node):
             p = m.pose.pose.position
             v = m.twist.twist
             self.publicar_odom(m.header.stamp, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w),
-                               (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z))
+                               (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z),
+                               fuente="lidar")
 
-    def publicar_odom(self, stamp_perro, pos, quat, vlin, vang):
+    def publicar_odom(self, stamp_perro, pos, quat, vlin, vang, fuente="patas"):
         """/odom + TF odom->base_link (hora de la laptop) y /go2/odom_perro (hora del perro, para
-        go2_nube). escala_odom corrige la escala de x, y ('go2 escala' la mide contra el lidar)."""
+        go2_nube y go2_slam3d). escala_odom corrige la escala de x, y de las patas ('go2 escala').
+        Si cambia la fuente (GLIM se calla -> patas, y vuelve), la pose sigue CONTINUA: la nueva
+        fuente se engancha donde quedo la anterior (sin saltos para Nav2)."""
         ahora_m = time.monotonic()
         if ahora_m - self.t_pub_odom < 0.01:
             return                       # /sportmodestate llega a ~500 Hz: TF a 100 Hz basta (y no ahoga a Nav2)
         self.t_pub_odom = ahora_m
-        if self.odom0 is None:
-            self.odom0 = pos
-        k = self.escala_odom
-        x = self.odom0[0] + k * (pos[0] - self.odom0[0])
-        y = self.odom0[1] + k * (pos[1] - self.odom0[1])
-        z = pos[2]
+        k = self.escala_odom if fuente == "patas" else 1.0
+        if fuente == "patas":
+            if self.odom0 is None:
+                self.odom0 = pos
+            pos = (self.odom0[0] + k * (pos[0] - self.odom0[0]), self.odom0[1] + k * (pos[1] - self.odom0[1]), pos[2])
+        yaw = math.atan2(2 * (quat[3] * quat[2] + quat[0] * quat[1]), 1 - 2 * (quat[1] ** 2 + quat[2] ** 2))
+        if fuente != self.fuente_actual:
+            if self.ultima_pose is not None:
+                # enganche: correccion (x, y, z, giro) que lleva la pose nueva a la ultima publicada
+                lx, ly, lz, lyaw = self.ultima_pose
+                dyaw = lyaw - yaw
+                c, s_ = math.cos(dyaw), math.sin(dyaw)
+                self.enganche[fuente] = (lx - (c * pos[0] - s_ * pos[1]), ly - (s_ * pos[0] + c * pos[1]), lz - pos[2], dyaw)
+                self.get_logger().warn("odometria: %s -> %s (enganchada sin salto)" % (self.fuente_actual, fuente))
+            self.fuente_actual = fuente
+        ex, ey, ez, eyaw = self.enganche.get(fuente, (0.0, 0.0, 0.0, 0.0))
+        if eyaw or ex or ey or ez:
+            c, s_ = math.cos(eyaw), math.sin(eyaw)
+            pos = (c * pos[0] - s_ * pos[1] + ex, s_ * pos[0] + c * pos[1] + ey, pos[2] + ez)
+            qz, qw = math.sin(eyaw / 2), math.cos(eyaw / 2)          # q_enganche * q
+            x0, y0, z0, w0 = quat
+            quat = (qw * x0 - qz * y0, qw * y0 + qz * x0, qw * z0 + qz * w0, qw * w0 - qz * z0)
+            yaw += eyaw
+        x, y, z = pos
+        self.ultima_pose = (x, y, z, yaw)
         ahora = self.get_clock().now().to_msg()
         o = Odometry()
         o.header.stamp = ahora
@@ -232,12 +260,28 @@ class Driver(Node):
         self.n_odom += 1
         self.t_odom = time.monotonic()
 
+    def cb_glim(self, m):
+        """Odometria de GLIM (pose de la IMU del cuerpo en su 'odom') -> base_link."""
+        self.t_glim = time.monotonic()
+        q, p, v = m.pose.pose.orientation, m.pose.pose.position, m.twist.twist
+        x, y, z, w = q.x, q.y, q.z, q.w
+        # base = imu * T_imu_base (la IMU esta en (-0.02557, 0, 0.04232) del centro, sin giro)
+        tx, ty, tz = 0.02557, 0.0, -0.04232
+        bx = p.x + (1 - 2 * (y * y + z * z)) * tx + 2 * (x * y - z * w) * ty + 2 * (x * z + y * w) * tz
+        by = p.y + 2 * (x * y + z * w) * tx + (1 - 2 * (x * x + z * z)) * ty + 2 * (y * z - x * w) * tz
+        bz = p.z + 2 * (x * z - y * w) * tx + 2 * (y * z + x * w) * ty + (1 - 2 * (x * x + y * y)) * tz
+        self.publicar_odom(m.header.stamp, (bx, by, bz), (x, y, z, w), (v.linear.x, v.linear.y, v.linear.z),
+                           (v.angular.x, v.angular.y, v.angular.z), fuente="glim")
+
     def cb_sport_rapido(self, m):
         self.t_sport_rapido = time.monotonic()
         self._odom_patas(m)
 
     def _odom_patas(self, m):
-        if self.fuente_odom != "patas":
+        if self.fuente_odom == "glim":
+            if time.monotonic() - self.t_glim < 0.5:
+                return                   # manda GLIM; las patas solo si GLIM se calla (respaldo)
+        elif self.fuente_odom != "patas":
             return
         q = m.imu_state.quaternion                      # w x y z
         st = Header().stamp

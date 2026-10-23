@@ -167,6 +167,19 @@ mitad a menos de 25 cm (el cuerpo), reloj del perro 3.5 s atrasado, y la IMU int
 **girada 122° en z** respecto a la nube: por eso go2_nav usa la odometría del propio perro
 (`/utlidar/robot_odom`) y no una odometría lidar-inercial con la IMU del L1.
 
+### GLIM (`go2 lanzar slam:=glim`)
+SLAM lidar-inercial profesional (koide3/GLIM), en la **GPU** si se instala con CUDA:
+```
+go2 instalar_glim                  # una vez (PPA oficial; con GPU si se puede)
+go2 lanzar slam:=glim rviz:=true
+```
+- entra la nube CRUDA del L1 sin el cuerpo (`/go2/l1_sin_cuerpo`, de go2_nube) y la IMU del
+  **cuerpo** (`/go2/imu`, de go2_imu: SportModeState, mismo reloj). NO la IMU interna del L1 (girada
+  122 grados: por eso fallaba antes). Extrinseca del URDF. Config: `~/.go2_nav/glim/`.
+- GLIM da la odometria (el driver la usa; si GLIM se calla 0.5 s vuelve a las patas sin salto) y el
+  mapa global con cierre de lazos (map->odom). go2_slam3d dibuja el 2D para Nav2 y el 3D.
+- con `mapa:=casa`: GLIM solo odometria y go2_slam3d se ubica en el mapa guardado.
+
 ### SLAM 3D (`go2_slam3d`, por defecto)
 slam_toolbox solo veía un "scan" 2D ralo armado de la nube del L1: emparejaba mal y el mapa salía
 con paredes dobles y rayos sueltos. `go2_slam3d` usa la **nube 3D completa** (suelo, paredes,
