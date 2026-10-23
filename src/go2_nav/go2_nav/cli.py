@@ -393,6 +393,63 @@ def analizar_frenadas(ruta):
     return 0
 
 
+def diag_nav(nodo, seg=10.0):
+    """Que tan al dia esta Nav2 por dentro: los costmaps publican la huella del perro con el sello de
+    SU ultimo TF; si ese sello se queda viejo, ese nodo dejo de recibir el TF (o de actualizarse).
+    Ademas CPU y procesos. Guarda ~/.go2_nav/diag_nav.txt."""
+    import os
+    import subprocess
+    from geometry_msgs.msg import PolygonStamped
+    from nav_msgs.msg import OccupancyGrid
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    reloj = nodo.get_clock()
+    vistos = {}
+
+    def anota(nombre):
+        def cb(m):
+            ahora = reloj.now().nanoseconds * 1e-9
+            st = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+            e = vistos.setdefault(nombre, {"n": 0, "edad": None})
+            e["n"] += 1
+            e["edad"] = ahora - st
+            if nombre.endswith("footprint") and m.polygon.points:
+                xs = [p.x for p in m.polygon.points]
+                ys = [p.y for p in m.polygon.points]
+                e["centro"] = (sum(xs) / len(xs), sum(ys) / len(ys))
+        return cb
+    lat = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+    for top in ("/local_costmap/published_footprint", "/global_costmap/published_footprint"):
+        nodo.create_subscription(PolygonStamped, top, anota(top), 10)
+    for top in ("/local_costmap/costmap", "/global_costmap/costmap", "/map"):
+        nodo.create_subscription(OccupancyGrid, top, anota(top), lat)
+    print("midiendo Nav2 %.0f s..." % seg)
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seg:
+        rclpy.spin_once(nodo, timeout_sec=0.05)
+    L = ["DIAGNOSTICO NAV2 (%.0f s) %s" % (seg, time.strftime("%Y-%m-%d %H:%M:%S"))]
+    for top in ("/local_costmap/published_footprint", "/global_costmap/published_footprint",
+                "/local_costmap/costmap", "/global_costmap/costmap", "/map"):
+        e = vistos.get(top)
+        if e is None:
+            L.append("  %-38s NO LLEGA" % top)
+        else:
+            L.append("  %-38s %5.1f Hz  sello con %+.2f s de atraso%s" % (
+                top, e["n"] / seg, e["edad"],
+                ("  perro en (%.2f, %.2f)" % e["centro"]) if "centro" in e else ""))
+    L.append("carga del CPU (1/5/15 min): %.1f %.1f %.1f  (nucleos: %d)" % (os.getloadavg() + (os.cpu_count(),)))
+    try:
+        ps = subprocess.run(["ps", "-eo", "pcpu,pmem,pid,args", "--sort=-pcpu"], capture_output=True, text=True).stdout
+        L += ["procesos que mas CPU usan:"] + ["  " + ln[:150] for ln in ps.splitlines()[:14]]
+    except OSError:
+        pass
+    txt = "\n".join(L)
+    print(txt)
+    with open(os.path.expanduser("~/.go2_nav/diag_nav.txt"), "w") as f:
+        f.write(txt + "\n")
+    print("(guardado en ~/.go2_nav/diag_nav.txt)")
+    return 0
+
+
 def diag_tf(nodo, seg=15.0):
     """Quien publica cada TF, a que ritmo y con que atraso, y si llegan /odom y /go2/correccion.
     Lo guarda en ~/.go2_nav/diag_tf.txt (para mandarlo / leerlo)."""
@@ -1315,6 +1372,8 @@ sudo apt-get install -y libgtsam-points-dev ros-jazzy-glim-ros && echo "GLIM CPU
             return probar_mov(nodo)
         if args[0] == "manejar":
             return manejar(nodo)
+        if args[0] == "diag_nav":
+            return diag_nav(nodo)
         if args[0] == "diag_tf":
             return diag_tf(nodo)
         if args[0] == "calibrar_lidar":
