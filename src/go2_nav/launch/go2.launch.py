@@ -87,6 +87,17 @@ def _slam_toolbox(context):
 AJUSTES = os.path.expanduser("~/.go2_nav/ajustes.yaml")
 
 
+def _nube(context):
+    extra = _ajustes()[0]
+    sim = LaunchConfiguration("sim").perform(context) == "true"
+    if LaunchConfiguration("nube").perform(context) == "unitree" or sim:
+        return [Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen",
+                     parameters=extra)]
+    return [Node(package="go2_nav", executable="nube", name="go2_nube", output="screen", parameters=extra),
+            Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen",
+                 parameters=[{"topico_nube": "/go2/nube_odom"}] + extra)]
+
+
 @functools.lru_cache(maxsize=None)
 def _ajustes():
     """Tus ajustes (~/.go2_nav/ajustes.yaml, ver config/ajustes_ejemplo.yaml): van DESPUES de los
@@ -167,6 +178,7 @@ def generate_launch_description():
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
+        DeclareLaunchArgument("nube", default_value="cruda"),           # cruda (go2_nube) | unitree (cloud_deskewed)
         DeclareLaunchArgument("slam", default_value="go2"),             # go2 (SLAM 3D) | toolbox (slam_toolbox 2D)
         DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
         DeclareLaunchArgument("control", default_value="auto"),         # control PS4: auto (no en sim) | true | false
@@ -186,7 +198,10 @@ def generate_launch_description():
         # el CUERPO del perro en RViz (modelo de Unitree; las patas se mueven con /joint_states del driver)
         Node(package="robot_state_publisher", executable="robot_state_publisher", name="go2_modelo",
              parameters=[{"robot_description": urdf}]),
-        Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen", parameters=extra),
+        # nube: cruda (por defecto) = /utlidar/cloud del sensor llevada a 'odom' en ROS 2 (go2_nube);
+        #       unitree = /utlidar/cloud_deskewed procesada por el perro ('go2 escala' la midio moviendose
+        #       con el perro: no sirve para mapear)
+        OpaqueFunction(function=_nube),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen", parameters=extra),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):
         # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE

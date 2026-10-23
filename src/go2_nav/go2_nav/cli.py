@@ -266,23 +266,36 @@ def probar_mov(nodo):
 
 
 def escala(nodo):
-    """Mide si la odometria del perro mide bien las distancias: frente a una pared, avanza ~0.6 m y
-    compara lo que dice la odometria con lo que se acerco la pared segun el lidar."""
+    """Frente a una pared avanza ~0.6 m y compara TRES cosas:
+      1. el avance real: la distancia a la pared en la nube CRUDA del L1 (/utlidar/cloud, marco del
+         sensor + la extrinseca fija; no depende de ninguna odometria);
+      2. el avance segun la odometria del perro (/odom);
+      3. si la pared se queda QUIETA en la nube procesada del perro (/utlidar/cloud_deskewed, 'odom')
+         -- debe quedarse quieta; si se mueve, esa nube no sirve para mapear."""
     import numpy as np
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import PointCloud2
     from .nube import leer_xyz
-    od, nubes = {}, []
+    from .nube_cruda import leer_campos, rot_rpy
+    R_ext = rot_rpy(0.0, 2.8782, 0.0)
+    t_ext = np.array([0.28945, 0.0, -0.046825])
+    od, crudas, procesadas = {}, [], []
 
     def cb_od(m):
         q = m.pose.pose.orientation
         od["p"] = (m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z,
                    math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+
+    def cb_cruda(m):
+        d, _ = leer_campos(m, ["x", "y", "z"])
+        p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
+        crudas.append(p[np.isfinite(p).all(axis=1)] @ R_ext.T + t_ext)
     nodo.create_subscription(Odometry, "/odom", cb_od, 10)
-    nodo.create_subscription(PointCloud2, "/go2/nube_sin_fantasmas",
-                             lambda m: nubes.append((leer_xyz(m), od.get("p"))), qos_profile_sensor_data)
+    nodo.create_subscription(PointCloud2, "/utlidar/cloud", cb_cruda, qos_profile_sensor_data)
+    nodo.create_subscription(PointCloud2, "/utlidar/cloud_deskewed", lambda m: procesadas.append(leer_xyz(m)),
+                             qos_profile_sensor_data)
     pub = nodo.create_publisher(Twist, "cmd_vel_prioridad", 10)
     cli = nodo.create_client(Comando, "/go2/comando")
     if cli.wait_for_service(timeout_sec=3.0):
@@ -297,33 +310,43 @@ def escala(nodo):
                 pub.publish(tw)
             rclpy.spin_once(nodo, timeout_sec=0.05)
 
-    def pared(seg=2.0):
-        """Distancia a la pared de delante (marco del perro), mediana de varias nubes."""
-        del nubes[:]
+    def medir(seg=2.0):
+        """(pared en el cuerpo segun la nube cruda, pared en 'odom' segun la nube del perro)."""
+        del crudas[:]
+        del procesadas[:]
         esperar(seg)
         ds = []
-        for xyz, p in nubes:
-            if p is None or len(xyz) == 0:
+        for c in crudas:
+            sel = (np.abs(c[:, 1]) < 0.3) & (c[:, 2] > -0.15) & (c[:, 2] < 0.5) & (c[:, 0] > 0.45) & (c[:, 0] < 5.0)
+            if sel.sum() >= 3:
+                ds.append(float(np.percentile(c[sel, 0], 10)))
+        p = od["p"]
+        cy, sy = math.cos(p[3]), math.sin(p[3])
+        dp = []
+        for xyz in procesadas:
+            if len(xyz) == 0:
                 continue
-            c, s_ = math.cos(p[3]), math.sin(p[3])
             dx, dy = xyz[:, 0] - p[0], xyz[:, 1] - p[1]
-            fx, fy, h = c * dx + s_ * dy, -s_ * dx + c * dy, xyz[:, 2] - p[2]
-            sel = (np.abs(fy) < 0.3) & (h > -0.05) & (h < 0.6) & (fx > 0.45) & (fx < 5.0)
-            if sel.sum() >= 5:
-                ds.append(float(np.percentile(fx[sel], 10)))
-        return (float(np.median(ds)), len(ds)) if len(ds) >= 3 else (None, len(ds))
+            fx, fy, h = cy * dx + sy * dy, -sy * dx + cy * dy, xyz[:, 2] - p[2]
+            sel = (np.abs(fy) < 0.3) & (h > -0.15) & (h < 0.5) & (fx > -3.0) & (fx < 6.0)
+            if sel.sum() >= 3:
+                # coordenada de la pared a lo largo del rumbo, en el marco de esa nube (no del perro)
+                proy = cy * xyz[sel, 0] + sy * xyz[sel, 1]
+                dp.append(float(np.percentile(proy, 90)))
+        return (float(np.median(ds)) if len(ds) >= 3 else None, len(ds),
+                float(np.median(dp)) if len(dp) >= 3 else None)
 
     esperar(1.0)
     if "p" not in od:
         print("no llega /odom: go2_nav no esta corriendo")
         return 1
-    print("ESCALA DE LA ODOMETRIA: pon al perro MIRANDO a una pared (lisa) a 1.5-3 m, con el camino libre.")
-    print("Avanza ~0.6 m derecho y para. Empieza en 3 s (Ctrl+C cancela)")
+    print("ESCALA: pon al perro MIRANDO a una pared a 1.5-3 m, camino libre. Avanza ~0.6 m y para.")
+    print("Empieza en 3 s (Ctrl+C cancela)")
     esperar(3.0)
-    d0, n0 = pared()
+    d0, n0, w0 = medir()
     if d0 is None or d0 < 1.2:
-        print("no veo una pared delante entre 1.2 y 5 m (%s). Acomodalo y repite." %
-              ("nada" if d0 is None else "esta a %.2f m" % d0))
+        print("la nube CRUDA no ve una pared delante entre 1.2 y 5 m (%s, %d nubes). Acomodalo y repite."
+              % ("nada" if d0 is None else "a %.2f m" % d0, n0))
         return 1
     p0 = od["p"]
     tw = Twist()
@@ -332,33 +355,40 @@ def escala(nodo):
     while time.monotonic() - t < 2.6:
         pub.publish(tw)
         rclpy.spin_once(nodo, timeout_sec=0.05)
-        c, s_ = math.cos(p0[3]), math.sin(p0[3])
-        if c * (od["p"][0] - p0[0]) + s_ * (od["p"][1] - p0[1]) > d0 - 0.8:
-            break                                                    # nunca a menos de 0.8 m
+        if crudas:
+            c = crudas[-1]
+            sel = (np.abs(c[:, 1]) < 0.3) & (c[:, 2] > -0.15) & (c[:, 2] < 0.5) & (c[:, 0] > 0.45)
+            if sel.sum() >= 3 and np.percentile(c[sel, 0], 10) < 0.8:
+                break                                                   # nunca a menos de 0.8 m
     esperar(1.5, Twist())
     p1 = od["p"]
-    d1, n1 = pared()
+    d1, n1, w1 = medir()
     if d1 is None:
-        print("despues de avanzar ya no veo la pared: repite mas lejos de ella")
+        print("despues de avanzar la nube cruda ya no ve la pared: repite mas lejos")
         return 1
     c, s_ = math.cos(p0[3]), math.sin(p0[3])
     d_odom = c * (p1[0] - p0[0]) + s_ * (p1[1] - p0[1])
-    d_lidar = d0 - d1
-    giro = math.degrees(math.atan2(math.sin(p1[3] - p0[3]), math.cos(p1[3] - p0[3])))
-    print("pared: %.3f m -> %.3f m  (%d y %d nubes)" % (d0, d1, n0, n1))
-    print("avance segun el LIDAR:      %.3f m" % d_lidar)
-    print("avance segun la ODOMETRIA:  %.3f m   (giro %.1f grados)" % (d_odom, giro))
-    if d_lidar < 0.2:
+    d_real = d0 - d1
+    print("1. avance REAL (pared en la nube cruda del L1): %.3f m   (%.2f -> %.2f m, %d/%d nubes)"
+          % (d_real, d0, d1, n0, n1))
+    print("2. avance segun la ODOMETRIA del perro:          %.3f m" % d_odom)
+    if w0 is not None and w1 is not None:
+        print("3. la pared en la nube PROCESADA del perro se movio %.3f m (deberia ser 0)" % (w1 - w0))
+    if d_real < 0.2:
         print("el perro casi no avanzo: corre 'go2 probar_mov'")
         return 1
-    k = d_odom / d_lidar
-    print("ESCALA de la odometria: %.0f %%" % (100 * k))
-    if abs(k - 1) <= 0.06:
-        print("OK: la odometria mide bien (error < 6 %, del orden del ruido de esta medida). Si el mapa sale\n"
-              "mal, NO es la escala: mira 'go2 mapa3d' (si la alineacion 3D descarta nubes y por que).")
+    k = d_odom / d_real
+    print()
+    if abs(k - 1) <= 0.08:
+        print("ODOMETRIA OK (%.0f %%): mide bien las distancias." % (100 * k))
     else:
-        print("!! la odometria se %s un %.0f %%. Repitelo 2 veces; si se mantiene, mandame este resultado."
-              % ("pasa" if k > 1 else "queda corta", abs(k - 1) * 100))
+        print("!! ODOMETRIA MAL: mide el %.0f %% de lo real." % (100 * k))
+    if w0 is not None and w1 is not None:
+        if abs(w1 - w0) > 0.15:
+            print("!! la nube PROCESADA del perro (/utlidar/cloud_deskewed) NO esta fija en 'odom': la pared se\n"
+                  "   mueve con el perro. Con ella no se puede mapear -> usa 'nube:=cruda' (lo de por defecto).")
+        else:
+            print("la nube procesada del perro esta fija en 'odom' (bien).")
     return 0
 
 
