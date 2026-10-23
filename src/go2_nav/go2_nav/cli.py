@@ -117,7 +117,7 @@ def camara(nodo):
         print()
 
 
-FRENO = 0.08     # m desde el borde del cuerpo: 'go2 manejar' no avanza (ni retrocede) si hay algo mas cerca
+FRENO = 0.11     # m desde el borde del cuerpo: 'go2 manejar' no avanza (ni retrocede) si hay algo mas cerca
 
 
 def manejar(nodo):

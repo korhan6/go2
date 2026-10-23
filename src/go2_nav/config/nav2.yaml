@@ -379,13 +379,17 @@ collision_monitor:
     source_timeout: 1.0
     base_shift_correction: True
     stop_pub_timeout: 2.0
-    polygons: ["Huella", "Frente"]
+    polygons: ["Huella"]
     Huella:
-      # PARA solo si algo esta a menos de ~6 cm del cuerpo (huella + 6 cm). Antes era "approach"
-      # con 0.5 s de anticipacion: a 0.4 m/s frenaba a ~20 cm de la pared, y "de repente"
+      # RESPALDO: el freno fino lo hace el driver (gobernar: corta a 11 cm, queda a ~5 cm). Esto
+      # solo actua si algo se acerca rapido a < 3 cm del cuerpo. "approach" (no "stop"): deja
+      # alejarse; un "stop" pegado a una pared dejaba al perro trabado. Sin la zona "Frente" que
+      # bajaba al 40 %: por debajo de 0.20 m/s el Go2 Air no camina y se quedaba lejos
       type: "polygon"
-      action_type: "stop"
-      points: "[[0.45, 0.15], [0.35, 0.22], [-0.42, 0.22], [-0.42, -0.22], [0.35, -0.22], [0.45, -0.15]]"
+      action_type: "approach"
+      points: "[[0.43, 0.13], [0.33, 0.20], [-0.40, 0.20], [-0.40, -0.20], [0.33, -0.20], [0.43, -0.13]]"
+      time_before_collision: 0.3
+      simulation_time_step: 0.05
       min_points: 4
       visualize: False
       enabled: True
@@ -399,7 +403,7 @@ collision_monitor:
       min_points: 4
       visualize: True
       polygon_pub_topic: "zona_frente"
-      enabled: True
+      enabled: False                     # (fuera de 'polygons': la frena el driver, ver Huella)
     observation_sources: ["obstaculos"]
     obstaculos:
       type: "pointcloud"

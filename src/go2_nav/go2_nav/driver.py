@@ -76,6 +76,14 @@ class Driver(Node):
         # el Go2 casi no avanza por debajo de ~0.20 m/s (pisa en el sitio): si Nav2 pide menos y hay
         # espacio libre en esa direccion, sube a esta velocidad
         self.v_efectiva = p("v_efectiva", 0.20).value
+        # FRENO segun la distancia (todas las ordenes: Nav2, control, teleop). El Go2 Air no camina
+        # por debajo de ~0.20 m/s y tarda ~0.3 s en parar: a 0.20 m/s recorre ~6 cm despues de la
+        # orden. Para quedar a 'parar_a' (5 cm) del cuerpo hay que cortar a 5 + 6 = 11 cm, y cerca
+        # de algo ir a 0.20 (no menos: se quedaria pisando en el sitio, "frena lejos")
+        self.parar_a = p("parar_a", 0.05).value
+        self.latencia = p("latencia_parada", 0.30).value
+        self.umbral_parada = self.parar_a + self.v_efectiva * self.latencia
+        self.frenadas = 0
         self.w_efectiva = p("w_efectiva", 0.40).value
         # giro en el sitio MAS CHICO que esto = "ya casi estoy alineado": se para en vez de subirlo
         # a w_efectiva. Antes cualquier correccion chica de Nav2 se volvia 0.40 rad/s, el perro se
@@ -350,7 +358,7 @@ class Driver(Node):
                 lado = "izq" if vy > 0 else "der"
                 costados = ("adelante",)
             d = H.get(lado)
-            libre = (d is None and lado != "atras") or (d is not None and d >= 0.35)
+            libre = (d is None and lado != "atras") or (d is not None and d >= self.umbral_parada)
             # y que no vaya rozando: los costados con algo de aire
             libre = libre and all(H.get(k) is None or H.get(k) >= 0.10 for k in costados)
             if libre:
@@ -366,6 +374,33 @@ class Driver(Node):
             # pasarse); una correccion real se sube al minimo con el que el Go2 si gira
             wz = 0.0 if abs(wz) < self.w_quieto else math.copysign(self.w_efectiva, wz)
         return vx, vy, wz
+
+    def gobernar(self, vx, vy):
+        """Velocidad maxima HACIA cada lado segun lo libre que hay (holguras del limpiador, desde el
+        borde del cuerpo): < umbral (11 cm) -> no avanza hacia ahi; hasta umbral + 20 cm -> 0.20 m/s
+        (lo minimo que camina); mas lejos sube 1.2 m/s por metro. Alejarse siempre se puede."""
+        H = self.holguras if time.monotonic() - self.t_holg < 1.0 else None
+        if H is None:
+            return vx, vy
+
+        def tope(d):
+            if d is None:
+                return None
+            if d < self.umbral_parada:
+                return 0.0
+            return max(self.v_efectiva, self.v_efectiva + 1.2 * (d - self.umbral_parada - 0.20))
+        for comp, lado_pos, lado_neg in ((0, "adelante", "atras"), (1, "izq", "der")):
+            v = (vx, vy)[comp]
+            t = tope(H.get(lado_pos if v > 0 else lado_neg)) if v else None
+            if t is not None and abs(v) > t:
+                v = math.copysign(t, v)
+                if t == 0.0:
+                    self.frenadas += 1
+                if comp == 0:
+                    vx = v
+                else:
+                    vy = v
+        return vx, vy
 
     def empuje(self, vx, vy, wz):
         """Si el perro no avanza lo que se le pide, subir la orden de a poco (ver __init__)."""
@@ -505,6 +540,8 @@ class Driver(Node):
             vx, vy, wz = self.empuje(vx, vy, wz)
         else:
             self.emp_k, self.emp_p = 1.0, None
+        if (vx or vy) and not self.calibrando_mov and not self.en_escalera:
+            vx, vy = self.gobernar(vx, vy)
         self.ultima_orden = (vx, vy, wz)
         if abs(vx) > 1e-3 or abs(vy) > 1e-3 or abs(wz) > 1e-3:
             self._req(API_MOVE, {"x": vx, "y": vy, "z": wz})
@@ -533,7 +570,7 @@ class Driver(Node):
              "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
              "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info,
-             "bloqueado": self.bloqueado, "acostado": self.acostado}
+             "bloqueado": self.bloqueado, "acostado": self.acostado, "frenadas": self.frenadas}
         self.n_odom = 0
         self.envios = 0
         self.muertas = 0
