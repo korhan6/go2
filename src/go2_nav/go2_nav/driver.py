@@ -152,9 +152,7 @@ class Driver(Node):
         self.create_subscription(Odometry, "/utlidar/robot_odom", self.cb_odom, sd)
         if self.fuente_odom == "glim":
             self.create_subscription(Odometry, p("topico_glim", "/glim_ros/odom").value, self.cb_glim, 50)
-        # (antes /sportmodestate a ~500 Hz: el driver usaba 60 % de un nucleo solo en leerlo. La
-        # odometria de las patas es la MISMA que /utlidar/robot_odom -- 'go2 escala' lo midio --, que
-        # llega a ~150 Hz y es un mensaje chico)
+        self.create_subscription(SportModeState, "/sportmodestate", self.cb_sport_rapido, sd)
         self.create_subscription(SportModeState, "/lf/sportmodestate", self.cb_sport, sd)
         self.create_subscription(LowState, "/lf/lowstate", self.cb_low, sd)
         self.create_subscription(Twist, "cmd_vel", self.cb_cmd, 10)
@@ -218,16 +216,13 @@ class Driver(Node):
     # ------------------------------------------------------------------ entradas
     @seguro
     def cb_odom(self, m):
-        f = self.fuente_odom
-        if f == "glim" and time.monotonic() - self.t_glim < 0.5:
-            return                                   # manda GLIM; esta es su respaldo
-        if f in ("lidar", "patas", "glim"):
+        if self.fuente_odom == "lidar":
             q = m.pose.pose.orientation
             p = m.pose.pose.position
             v = m.twist.twist
             self.publicar_odom(m.header.stamp, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w),
                                (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z),
-                               fuente="lidar" if f == "lidar" else "patas")
+                               fuente="lidar")
 
     @seguro
     def publicar_odom(self, stamp_perro, pos, quat, vlin, vang, fuente="patas"):
@@ -334,6 +329,8 @@ class Driver(Node):
     def cb_sport(self, m):
         self.altura = float(m.body_height)
         self.modo = int(m.mode)
+        if time.monotonic() - self.t_sport_rapido > 0.5:      # sin /sportmodestate rapido: esta (20 Hz)
+            self._odom_patas(m)
 
     @seguro
     def cb_low(self, m):

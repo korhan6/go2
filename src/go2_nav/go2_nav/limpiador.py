@@ -291,6 +291,11 @@ class Limpiador(Node):
         # dejaba en espera y el hilo del TF de controller_server/planner_server se trababa a los
         # 30-50 s (huella del perro con 115 s de atraso -> "Start occupied", "footprint not available")
         stamp = self.pose_stamp
+        ahora = self.get_clock().now()
+        atraso = (ahora.nanoseconds - (stamp.sec * 10**9 + stamp.nanosec)) * 1e-9
+        if atraso > 0.3:
+            self.get_logger().warn("la odometria (/odom) no llega hace %.1f s: nubes con sello viejo" % atraso,
+                                   throttle_duration_sec=1.0)
         xyz = leer_xyz(msg)
         x, y, z, yaw = self.pose
         if msg.header.frame_id not in ("odom", "map", "world", ""):
