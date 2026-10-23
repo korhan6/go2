@@ -18,7 +18,9 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
@@ -80,22 +82,30 @@ class Slam3D(Node):
             self.cargar(os.path.join(MAPAS, mapa))
 
         self.tfb = Buffer(cache_time=Duration(seconds=10.0))
-        TransformListener(self.tfb, self)
+        TransformListener(self.tfb, self, spin_thread=True)
         self.tfo = TransformBroadcaster(self)
         lat = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         self.pub_map = self.create_publisher(OccupancyGrid, "/map", lat)
         self.pub_3d = self.create_publisher(PointCloud2, "/go2/mapa_3d", lat)
         self.pub_est = self.create_publisher(String, "/go2/slam_estado", 1)
         sd = qos_profile_sensor_data
-        self.create_subscription(PointCloud2, "/go2/nube_sin_fantasmas", self.cb_nube, sd)
-        self.create_subscription(PointCloud2, "/go2/obstaculos", self.cb_obst, sd)
-        self.create_subscription(PointCloud2, "/go2/suelo", lambda m: setattr(self, "suelo", m), sd)
-        self.create_subscription(Bool, "/go2/pausar_slam", lambda m: setattr(self, "pausa", m.data), 1)
-        self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self.cb_pose_inicial, 1)
-        self.create_service(Comando, "/go2/mapa3d", self.srv)
-        self.create_timer(0.05, self.publicar_tf)
-        self.create_timer(0.5, self.lazo)
-        self.create_timer(1.0, self.publicar_estado)
+        # el TF map->odom va en su PROPIO hilo: antes, si el calculo del mapa se atrasaba, el TF dejaba
+        # de salir ("Transform data too old when converting from map to odom") y Nav2 abortaba
+        pesado = MutuallyExclusiveCallbackGroup()
+        liviano = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(PointCloud2, "/go2/nube_sin_fantasmas", self.cb_nube, sd, callback_group=pesado)
+        self.create_subscription(PointCloud2, "/go2/obstaculos", self.cb_obst, sd, callback_group=pesado)
+        self.create_subscription(PointCloud2, "/go2/suelo", lambda m: setattr(self, "suelo", m), sd,
+                                 callback_group=liviano)
+        self.create_subscription(Bool, "/go2/pausar_slam", lambda m: setattr(self, "pausa", m.data), 1,
+                                 callback_group=liviano)
+        self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self.cb_pose_inicial, 1,
+                                 callback_group=pesado)
+        self.create_service(Comando, "/go2/mapa3d", self.srv, callback_group=pesado)
+        self.create_timer(0.05, self.publicar_tf, callback_group=MutuallyExclusiveCallbackGroup())
+        self.create_timer(0.5, self.lazo, callback_group=pesado)
+        self.create_timer(1.0, self.publicar_estado, callback_group=liviano)
+        self.t_obst = 0.0
         self.get_logger().info("go2_slam3d listo (%s): odometria del perro + alineacion 3D contra el mapa"
                                % ("mapa guardado '%s', se ubica" % mapa if self.fijo else "mapeando"))
 
@@ -222,21 +232,30 @@ class Slam3D(Node):
 
     # ---------------------------------------------------------------- mapa 2D
     def cb_obst(self, m):
-        if self.fijo or self.pausa or time.monotonic() - self.t_nube > 1.0:
-            return
+        ahora = time.monotonic()
+        if self.fijo or self.pausa or ahora - self.t_nube > 1.0 or ahora - self.t_obst < 0.3:
+            return                               # el mapa 2D a ~3 Hz basta (y no se come la CPU)
         if self.arranque > 0:
             return
+        self.t_obst = ahora
+        t0 = time.perf_counter()
         lid = self._tf("odom", "lidar")
         if lid is None:
             return
-        o = leer_xyz(m).astype(np.float64)
-        s = leer_xyz(self.suelo).astype(np.float64) if self.suelo is not None else np.zeros((0, 3))
+        o = submuestrear(leer_xyz(m).astype(np.float64), 0.05)
+        s = submuestrear(leer_xyz(self.suelo).astype(np.float64), 0.10) if self.suelo is not None else np.zeros((0, 3))
+        rng = np.random.default_rng()
+        if len(o) > 2500:
+            o = o[rng.choice(len(o), 2500, replace=False)]
+        if len(s) > 1500:
+            s = s[rng.choice(len(s), 1500, replace=False)]
         sen = aplicar(self.T, np.array([list(lid[:3])]))[0]
         o = aplicar(self.T, o) if len(o) else o
         s = aplicar(self.T, s) if len(s) else s
         self.rej[self.piso].actualizar(sen[:2], o[:, :2] if len(o) else np.zeros((0, 2)),
                                        s[:, :2] if len(s) else None, alcance=self.alcance)
         self.cambio_2d = True
+        self.est["ms_2d"] = round((time.perf_counter() - t0) * 1000, 1)
 
     def publicar_map(self):
         occ, x0, y0 = self.rej[self.piso].ocupacion()
@@ -349,8 +368,10 @@ class Slam3D(Node):
 def main():
     rclpy.init()
     n = Slam3D()
+    ex = MultiThreadedExecutor(num_threads=3)
+    ex.add_node(n)
     try:
-        rclpy.spin(n)
+        ex.spin()
     except KeyboardInterrupt:
         pass
     finally:

@@ -247,7 +247,7 @@ class Rejilla(object):
             return np.zeros(0, np.int64)
         v = fin - s
         d = np.hypot(v[:, 0], v[:, 1])
-        n = np.maximum(1, (d / (self.res * 0.5)).astype(np.int64))
+        n = np.maximum(1, (d / (self.res * 0.9)).astype(np.int64))
         tot = int(n.sum())
         rep = np.repeat(np.arange(len(fin)), n)
         k = np.arange(tot) - np.repeat(np.cumsum(n) - n, n)

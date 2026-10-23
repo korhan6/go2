@@ -28,7 +28,7 @@ LAYOUTS = {
 # y izquierda, giro antihorario) -> signo +1. 'go2 control' lo mide igual.
 SIGNOS = {"vx": 1.0, "vy": 1.0, "wz": 1.0}
 
-FRENO = 0.20          # m desde el borde del cuerpo: igual que 'go2 manejar'
+FRENO = 0.08          # m desde el borde del cuerpo: frena a ~8 cm (antes 20: frenaba muy lejos)
 
 
 def elegir_layout(n_botones, propio=None):
