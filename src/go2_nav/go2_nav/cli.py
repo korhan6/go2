@@ -363,7 +363,13 @@ def escala(nodo):
     def giro(a, b):
         return math.degrees(math.atan2(math.sin(b[2] - a[2]), math.cos(b[2] - a[2])))
 
+    est = {}
+    nodo.create_subscription(String, "/go2/driver_estado", lambda m: est.update(json.loads(m.data)), 1)
     esperar(1.5)
+    if est.get("bloqueado") or est.get("acostado"):
+        print("el perro esta %s: 'go2 %s' y repite" % ("ACOSTADO" if est.get("acostado") else "BLOQUEADO",
+                                                    "levantar" if est.get("acostado") else "desbloquear"))
+        return 1
     fuentes = [k for k in ("lidar", "patas") if k in od]
     if not fuentes or not crudas:
         print("no llegan la odometria del perro o /utlidar/cloud: go2_nav corriendo? cable?")
@@ -380,8 +386,9 @@ def escala(nodo):
     if sensor and od.get("altura"):
         P_ = np.concatenate(sensor)
         Cb = P_ @ R_ext.T + t_ext
-        r = np.hypot(Cb[:, 0], Cb[:, 1])
-        sel = (Cb[:, 2] < -0.12) & (r > 0.45) & (r < 2.5)               # el piso alrededor, sin el cuerpo
+        r = np.linalg.norm(P_, axis=1)
+        # el piso a 0.8-3 m del L1: mas cerca el L1 lo ve mas alto (error medido: +12 cm a 15 cm)
+        sel = (Cb[:, 2] < -0.12) & (r > 0.8) & (r < 3.0)
         if sel.sum() > 100:
             F = P_[sel]
             mejor = None
@@ -485,7 +492,8 @@ def escala(nodo):
                 f, av, "%3.0f %%" % (100 * res[f][0]) if res[f][0] else "?",
                 gi, "%3.0f %%" % (100 * res[f][1]) if res[f][1] else "?"))
     if real_av < 0.2:
-        print("el perro casi no avanzo: corre 'go2 probar_mov'")
+        print("el perro casi no avanzo. Revisa: de pie y equilibrado ('go2 levantar'), no bloqueado\n"
+              "('go2 desbloquear'), nadie tocando el control (L1 suelto) y la app de Unitree cerrada.")
         return 1
 
     def error(r):
