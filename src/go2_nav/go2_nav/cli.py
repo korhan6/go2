@@ -265,37 +265,68 @@ def probar_mov(nodo):
     return 0
 
 
+def _guardar_ajuste_odom(fuente, k):
+    """~/.go2_nav/ajustes.yaml: go2_driver.fuente_odom / escala_odom (y aparta movimiento.json, que
+    se midio con la odometria mala)."""
+    import os
+    import yaml
+    ruta = os.path.expanduser("~/.go2_nav/ajustes.yaml")
+    try:
+        with open(ruta) as f:
+            d = yaml.safe_load(f) or {}
+    except OSError:
+        d = {}
+    nodo = d.setdefault("go2_driver", {}).setdefault("ros__parameters", {})
+    nodo["fuente_odom"] = fuente
+    nodo["escala_odom"] = round(float(k), 3)
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    with open(ruta, "w") as f:
+        yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
+    mov = os.path.expanduser("~/.go2_nav/movimiento.json")
+    if os.path.exists(mov):
+        os.replace(mov, mov.replace(".json", "_odometria_mala.json"))
+        print("aparte ~/.go2_nav/movimiento.json (se midio con la odometria mala: hacia que el perro\n"
+              "camine mas rapido de lo que pide Nav2). Si hace falta, 'go2 calibrar_mov' de nuevo.")
+    print("guardado en %s: fuente_odom=%s escala_odom=%.3f  -> relanza 'go2 lanzar'" % (ruta, fuente, k))
+
+
 def escala(nodo):
-    """Frente a una pared avanza ~0.6 m y compara TRES cosas:
-      1. el avance real: la distancia a la pared en la nube CRUDA del L1 (/utlidar/cloud, marco del
-         sensor + la extrinseca fija; no depende de ninguna odometria);
-      2. el avance segun la odometria del perro (/odom);
-      3. si la pared se queda QUIETA en la nube procesada del perro (/utlidar/cloud_deskewed, 'odom')
-         -- debe quedarse quieta; si se mueve, esa nube no sirve para mapear."""
+    """Mide las DOS odometrias del perro contra la nube CRUDA del L1 (que no depende de ninguna):
+      avance: frente a una pared avanza ~0.6 m (la pared se acerca lo que avanzo de verdad);
+      giro:   gira ~70 grados en el sitio (alinea la nube de despues con la de antes).
+    odometrias: 'lidar' = /utlidar/robot_odom (la que se usaba) | 'patas' = SportModeState."""
     import numpy as np
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import PointCloud2
-    from .nube import leer_xyz
+    from unitree_go.msg import SportModeState
     from .nube_cruda import leer_campos, rot_rpy
+    from .nucleo.slam3d import Registro, submuestrear
     R_ext = rot_rpy(0.0, 2.8782, 0.0)
     t_ext = np.array([0.28945, 0.0, -0.046825])
-    od, crudas, procesadas = {}, [], []
+    od, crudas = {}, []
 
-    def cb_od(m):
-        q = m.pose.pose.orientation
-        od["p"] = (m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z,
-                   math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+    def yaw_q(x, y, z, w):
+        return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+    def cb_lidar(m):
+        q, p = m.pose.pose.orientation, m.pose.pose.position
+        od["lidar"] = (p.x, p.y, yaw_q(q.x, q.y, q.z, q.w))
+
+    def cb_patas(m):
+        q = m.imu_state.quaternion
+        od["patas"] = (float(m.position[0]), float(m.position[1]), yaw_q(q[1], q[2], q[3], q[0]))
 
     def cb_cruda(m):
         d, _ = leer_campos(m, ["x", "y", "z"])
         p = np.stack([d["x"], d["y"], d["z"]], axis=1).astype(np.float64)
-        crudas.append(p[np.isfinite(p).all(axis=1)] @ R_ext.T + t_ext)
-    nodo.create_subscription(Odometry, "/odom", cb_od, 10)
+        c = p[np.isfinite(p).all(axis=1)] @ R_ext.T + t_ext
+        cuerpo = (np.abs(c[:, 0]) < 0.45) & (np.abs(c[:, 1]) < 0.25) & (c[:, 2] > -0.45)
+        crudas.append(c[~cuerpo])
+    nodo.create_subscription(Odometry, "/utlidar/robot_odom", cb_lidar, qos_profile_sensor_data)
+    nodo.create_subscription(SportModeState, "/lf/sportmodestate", cb_patas, qos_profile_sensor_data)
     nodo.create_subscription(PointCloud2, "/utlidar/cloud", cb_cruda, qos_profile_sensor_data)
-    nodo.create_subscription(PointCloud2, "/utlidar/cloud_deskewed", lambda m: procesadas.append(leer_xyz(m)),
-                             qos_profile_sensor_data)
     pub = nodo.create_publisher(Twist, "cmd_vel_prioridad", 10)
     cli = nodo.create_client(Comando, "/go2/comando")
     if cli.wait_for_service(timeout_sec=3.0):
@@ -310,45 +341,37 @@ def escala(nodo):
                 pub.publish(tw)
             rclpy.spin_once(nodo, timeout_sec=0.05)
 
-    def medir(seg=2.0):
-        """(pared en el cuerpo segun la nube cruda, pared en 'odom' segun la nube del perro)."""
+    def juntar(seg=2.0):
         del crudas[:]
-        del procesadas[:]
         esperar(seg)
-        ds = []
-        for c in crudas:
-            sel = (np.abs(c[:, 1]) < 0.3) & (c[:, 2] > -0.15) & (c[:, 2] < 0.5) & (c[:, 0] > 0.45) & (c[:, 0] < 5.0)
-            if sel.sum() >= 3:
-                ds.append(float(np.percentile(c[sel, 0], 10)))
-        p = od["p"]
-        cy, sy = math.cos(p[3]), math.sin(p[3])
-        dp = []
-        for xyz in procesadas:
-            if len(xyz) == 0:
-                continue
-            dx, dy = xyz[:, 0] - p[0], xyz[:, 1] - p[1]
-            fx, fy, h = cy * dx + sy * dy, -sy * dx + cy * dy, xyz[:, 2] - p[2]
-            sel = (np.abs(fy) < 0.3) & (h > -0.15) & (h < 0.5) & (fx > -3.0) & (fx < 6.0)
-            if sel.sum() >= 3:
-                # coordenada de la pared a lo largo del rumbo, en el marco de esa nube (no del perro)
-                proy = cy * xyz[sel, 0] + sy * xyz[sel, 1]
-                dp.append(float(np.percentile(proy, 90)))
-        return (float(np.median(ds)) if len(ds) >= 3 else None, len(ds),
-                float(np.median(dp)) if len(dp) >= 3 else None)
+        return np.concatenate(crudas) if crudas else np.zeros((0, 3))
 
-    esperar(1.0)
-    if "p" not in od:
-        print("no llega /odom: go2_nav no esta corriendo")
+    def pared(c):
+        sel = (np.abs(c[:, 1]) < 0.3) & (c[:, 2] > -0.15) & (c[:, 2] < 0.5) & (c[:, 0] > 0.45) & (c[:, 0] < 5.0)
+        return float(np.percentile(c[sel, 0], 10)) if sel.sum() >= 20 else None
+
+    def avance(a, b, yaw0):
+        return math.cos(yaw0) * (b[0] - a[0]) + math.sin(yaw0) * (b[1] - a[1])
+
+    def giro(a, b):
+        return math.degrees(math.atan2(math.sin(b[2] - a[2]), math.cos(b[2] - a[2])))
+
+    esperar(1.5)
+    fuentes = [k for k in ("lidar", "patas") if k in od]
+    if not fuentes or not crudas:
+        print("no llegan la odometria del perro o /utlidar/cloud: go2_nav corriendo? cable?")
         return 1
-    print("ESCALA: pon al perro MIRANDO a una pared a 1.5-3 m, camino libre. Avanza ~0.6 m y para.")
-    print("Empieza en 3 s (Ctrl+C cancela)")
+    print("MEDIR LA ODOMETRIA contra el lidar crudo. 1) AVANCE: pon al perro MIRANDO a una pared a 1.5-3 m,\n"
+          "camino libre. 2) GIRO: despues gira ~70 grados en el sitio (1 m libre alrededor).\n"
+          "Empieza en 3 s (Ctrl+C cancela)")
     esperar(3.0)
-    d0, n0, w0 = medir()
+    # ---- avance
+    d0 = pared(juntar())
     if d0 is None or d0 < 1.2:
-        print("la nube CRUDA no ve una pared delante entre 1.2 y 5 m (%s, %d nubes). Acomodalo y repite."
-              % ("nada" if d0 is None else "a %.2f m" % d0, n0))
+        print("la nube cruda no ve una pared delante entre 1.2 y 5 m (%s). Acomodalo y repite."
+              % ("nada" if d0 is None else "a %.2f m" % d0))
         return 1
-    p0 = od["p"]
+    o0 = dict(od)
     tw = Twist()
     tw.linear.x = 0.25
     t = time.monotonic()
@@ -356,39 +379,97 @@ def escala(nodo):
         pub.publish(tw)
         rclpy.spin_once(nodo, timeout_sec=0.05)
         if crudas:
-            c = crudas[-1]
-            sel = (np.abs(c[:, 1]) < 0.3) & (c[:, 2] > -0.15) & (c[:, 2] < 0.5) & (c[:, 0] > 0.45)
-            if sel.sum() >= 3 and np.percentile(c[sel, 0], 10) < 0.8:
-                break                                                   # nunca a menos de 0.8 m
+            dd = pared(crudas[-1])
+            if dd is not None and dd < 0.8:
+                break
     esperar(1.5, Twist())
-    p1 = od["p"]
-    d1, n1, w1 = medir()
+    o1 = dict(od)
+    d1 = pared(juntar())
     if d1 is None:
-        print("despues de avanzar la nube cruda ya no ve la pared: repite mas lejos")
+        print("despues de avanzar no veo la pared: repite mas lejos")
         return 1
-    c, s_ = math.cos(p0[3]), math.sin(p0[3])
-    d_odom = c * (p1[0] - p0[0]) + s_ * (p1[1] - p0[1])
-    d_real = d0 - d1
-    print("1. avance REAL (pared en la nube cruda del L1): %.3f m   (%.2f -> %.2f m, %d/%d nubes)"
-          % (d_real, d0, d1, n0, n1))
-    print("2. avance segun la ODOMETRIA del perro:          %.3f m" % d_odom)
-    if w0 is not None and w1 is not None:
-        print("3. la pared en la nube PROCESADA del perro se movio %.3f m (deberia ser 0)" % (w1 - w0))
-    if d_real < 0.2:
+    real_av = d0 - d1
+    # ---- giro
+    antes = juntar()
+    o2 = dict(od)
+    tw = Twist()
+    tw.angular.z = 0.6
+    esperar(2.0, tw)
+    esperar(1.5, Twist())
+    o3 = dict(od)
+    despues = juntar()
+    real_giro = None
+    # sin piso ni techo: son iguales a cualquier giro y taparian la medida
+    antes = antes[(antes[:, 2] > -0.2) & (antes[:, 2] < 1.5)]
+    despues = despues[(despues[:, 2] > -0.2) & (despues[:, 2] < 1.5)]
+    if len(antes) > 200 and len(despues) > 200:
+        reg = Registro()
+        reg.insertar(antes)
+        reg.rearmar((0.0, 0.0), forzar=True)
+        s2 = submuestrear(despues, 0.10)
+        mejor = None
+        for g in np.radians(np.arange(-180, 180, 2.0)):        # busqueda gruesa del giro
+            c_, s_ = math.cos(g), math.sin(g)
+            q = s2.copy()
+            q[:, 0], q[:, 1] = c_ * s2[:, 0] - s_ * s2[:, 1], s_ * s2[:, 0] + c_ * s2[:, 1]
+            dist, _ = reg.arbol.query(q, k=1, distance_upper_bound=0.08)
+            n = int(np.isfinite(dist).sum())
+            if mejor is None or n > mejor[0]:
+                mejor = (n, g)
+        # fino: +-4 grados cada 0.5 y corrimiento +-6 cm (el centro del giro no es exacto)
+        fino = None
+        for g in np.radians(np.arange(-4.0, 4.01, 0.5)) + mejor[1]:
+            c_, s_ = math.cos(g), math.sin(g)
+            q0 = np.stack([c_ * s2[:, 0] - s_ * s2[:, 1], s_ * s2[:, 0] + c_ * s2[:, 1], s2[:, 2]], axis=1)
+            for dx in (-0.06, -0.03, 0.0, 0.03, 0.06):
+                for dy in (-0.06, -0.03, 0.0, 0.03, 0.06):
+                    dist, _ = reg.arbol.query(q0 + (dx, dy, 0.0), k=1, distance_upper_bound=0.06)
+                    sc = float(np.sum(np.where(np.isfinite(dist), 1.0 - (dist / 0.06) ** 2, 0.0)))
+                    if fino is None or sc > fino[0]:
+                        fino = (sc, g)
+        if mejor[0] >= 0.2 * len(s2):
+            real_giro = math.degrees(fino[1])
+    # ---- resultado
+    print("\n                 AVANCE          GIRO")
+    print("lidar crudo:     %6.3f m      %s" % (real_av, "%6.1f grados" % real_giro if real_giro is not None
+                                                     else "  (no pude medirlo)"))
+    res = {}
+    for f in fuentes:
+        if f in o0 and f in o1 and f in o2 and f in o3:
+            av = avance(o0[f], o1[f], o0[f][2])
+            gi = giro(o2[f], o3[f])
+            res[f] = (av / real_av if real_av > 0.2 else None,
+                      gi / real_giro if real_giro and abs(real_giro) > 15 else None)
+            print("odometria %-6s %6.3f m (%s)  %6.1f grados (%s)" % (
+                f, av, "%3.0f %%" % (100 * res[f][0]) if res[f][0] else "?",
+                gi, "%3.0f %%" % (100 * res[f][1]) if res[f][1] else "?"))
+    if real_av < 0.2:
         print("el perro casi no avanzo: corre 'go2 probar_mov'")
         return 1
-    k = d_odom / d_real
+
+    def error(r):
+        return abs(r[0] - 1) + (abs(r[1] - 1) if r[1] else 0.5)
+    validas = {f: r for f, r in res.items() if r[0]}
+    if not validas:
+        return 1
+    f = min(validas, key=lambda k: error(validas[k]))
+    ka, kg = validas[f]
     print()
-    if abs(k - 1) <= 0.08:
-        print("ODOMETRIA OK (%.0f %%): mide bien las distancias." % (100 * k))
+    if kg is not None and abs(kg - 1) > 0.10:
+        print("!! el GIRO de la odometria '%s' tambien esta mal (%.0f %%): la escala sola no lo arregla.\n"
+              "   Mandame este resultado." % (f, 100 * kg))
+    if abs(ka - 1) <= 0.06 and (kg is None or abs(kg - 1) <= 0.10):
+        print("la odometria '%s' esta BIEN." % f)
+        k = 1.0
     else:
-        print("!! ODOMETRIA MAL: mide el %.0f %% de lo real." % (100 * k))
-    if w0 is not None and w1 is not None:
-        if abs(w1 - w0) > 0.15:
-            print("!! la nube PROCESADA del perro (/utlidar/cloud_deskewed) NO esta fija en 'odom': la pared se\n"
-                  "   mueve con el perro. Con ella no se puede mapear -> usa 'nube:=cruda' (lo de por defecto).")
-        else:
-            print("la nube procesada del perro esta fija en 'odom' (bien).")
+        k = 1.0 / ka
+        print("mejor: odometria '%s' con escala %.3f (mide el %.0f %% del avance real)" % (f, k, 100 * ka))
+    try:
+        si = input("guardo fuente_odom=%s escala_odom=%.3f en ~/.go2_nav/ajustes.yaml? [s/N] " % (f, k))
+    except EOFError:
+        si = ""
+    if si.strip().lower().startswith("s"):
+        _guardar_ajuste_odom(f, k)
     return 0
 
 

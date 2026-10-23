@@ -108,8 +108,16 @@ class Driver(Node):
         self.pub_diag = self.create_publisher(String, "/go2/driver_estado", 1)
         self.pub_evita = self.create_publisher(Request, "/api/obstacles_avoid/request", 10)
 
+        # odometria: lidar = /utlidar/robot_odom (la del L1 en el perro) | patas = SportModeState
+        # (patas + IMU del cuerpo). 'go2 escala' mide las dos contra el lidar crudo y elige.
+        self.fuente_odom = p("fuente_odom", "lidar").value
+        self.escala_odom = float(p("escala_odom", 1.0).value)
+        self.odom0 = None
+        self.t_sport_rapido = 0.0
+        self.pub_odom_perro = self.create_publisher(Odometry, "/go2/odom_perro", 50)
         sd = qos_profile_sensor_data
         self.create_subscription(Odometry, "/utlidar/robot_odom", self.cb_odom, sd)
+        self.create_subscription(SportModeState, "/sportmodestate", self.cb_sport_rapido, sd)
         self.create_subscription(SportModeState, "/lf/sportmodestate", self.cb_sport, sd)
         self.create_subscription(LowState, "/lf/lowstate", self.cb_low, sd)
         self.create_subscription(Twist, "cmd_vel", self.cb_cmd, 10)
@@ -166,33 +174,69 @@ class Driver(Node):
         self.create_timer(0.5, self.patas_de_pie)
         self.create_timer(2.0, self.prender_lidar)
         self.create_timer(3.0, self.revisar_evitacion)
-        self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odom con hora local")
+        self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odometria '%s' (escala %.3f)"
+                               % (self.fuente_odom, self.escala_odom))
 
     # ------------------------------------------------------------------ entradas
     def cb_odom(self, m):
+        if self.fuente_odom == "lidar":
+            q = m.pose.pose.orientation
+            p = m.pose.pose.position
+            v = m.twist.twist
+            self.publicar_odom(m.header.stamp, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w),
+                               (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z))
+
+    def publicar_odom(self, stamp_perro, pos, quat, vlin, vang):
+        """/odom + TF odom->base_link (hora de la laptop) y /go2/odom_perro (hora del perro, para
+        go2_nube). escala_odom corrige la escala de x, y ('go2 escala' la mide contra el lidar)."""
+        if self.odom0 is None:
+            self.odom0 = pos
+        k = self.escala_odom
+        x = self.odom0[0] + k * (pos[0] - self.odom0[0])
+        y = self.odom0[1] + k * (pos[1] - self.odom0[1])
+        z = pos[2]
         ahora = self.get_clock().now().to_msg()
         o = Odometry()
         o.header.stamp = ahora
         o.header.frame_id = "odom"
         o.child_frame_id = "base_link"
-        o.pose = m.pose
-        o.twist = m.twist
+        o.pose.pose.position.x, o.pose.pose.position.y, o.pose.pose.position.z = x, y, z
+        r = o.pose.pose.orientation
+        r.x, r.y, r.z, r.w = quat
+        o.twist.twist.linear.x, o.twist.twist.linear.y, o.twist.twist.linear.z = k * vlin[0], k * vlin[1], vlin[2]
+        o.twist.twist.angular.x, o.twist.twist.angular.y, o.twist.twist.angular.z = vang
         self.pub_odom.publish(o)
+        o.header.stamp = stamp_perro
+        self.pub_odom_perro.publish(o)
         t = TransformStamped()
         t.header.stamp = ahora
         t.header.frame_id = "odom"
         t.child_frame_id = "base_link"
-        p = m.pose.pose.position
-        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = p.x, p.y, p.z
-        t.transform.rotation = m.pose.pose.orientation
+        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = x, y, z
+        t.transform.rotation = o.pose.pose.orientation
         self.tf.sendTransform(t)
-        self.pose_xy = (p.x, p.y)
+        self.pose_xy = (x, y)
         self.n_odom += 1
         self.t_odom = time.monotonic()
+
+    def cb_sport_rapido(self, m):
+        self.t_sport_rapido = time.monotonic()
+        self._odom_patas(m)
+
+    def _odom_patas(self, m):
+        if self.fuente_odom != "patas":
+            return
+        q = m.imu_state.quaternion                      # w x y z
+        st = Header().stamp
+        st.sec, st.nanosec = int(m.stamp.sec), int(m.stamp.nanosec)
+        self.publicar_odom(st, tuple(float(v) for v in m.position), (float(q[1]), float(q[2]), float(q[3]), float(q[0])),
+                           tuple(float(v) for v in m.velocity), (0.0, 0.0, float(m.yaw_speed)))
 
     def cb_sport(self, m):
         self.altura = float(m.body_height)
         self.modo = int(m.mode)
+        if time.monotonic() - self.t_sport_rapido > 0.5:      # sin /sportmodestate rapido: esta (20 Hz)
+            self._odom_patas(m)
 
     def cb_low(self, m):
         self.soc = int(m.bms_state.soc)

@@ -6,7 +6,7 @@ el perro). Todo lo que se arma con ella sale corrido: paredes que nunca aparecen
 
 Aca se usa lo que sale del sensor tal cual:
   /utlidar/cloud      marco del L1 (utlidar_lidar), reloj del perro, campo 'time' por punto
-  /utlidar/robot_odom pose del perro (~150 Hz), MISMO reloj -> se interpola por punto (sin desfase)
+  /go2/odom_perro     pose del perro (driver: fuente y escala de 'go2 escala'), MISMO reloj -> por punto
   extrinseca del L1 en el cuerpo (URDF de Unitree; la inclinacion la confirmo 'go2 diagnostico'):
     xyz = (0.28945, 0, -0.046825)  rpy = (0, 2.8782, 0)   -- boca abajo, ~15 grados al suelo
 Cada punto: cuerpo = R_ext * p + t_ext ; odom = pose(t_punto) * cuerpo  (corrige el movimiento
@@ -79,7 +79,10 @@ class NubeCruda(Node):
         self.vueltas = collections.deque(maxlen=max(1, self.acumular))
         self.pub = self.create_publisher(PointCloud2, "/go2/nube_odom", qos_profile_sensor_data)
         self.pub_est = self.create_publisher(String, "/go2/nube_estado", 1)
-        self.create_subscription(Odometry, "/utlidar/robot_odom", self.cb_odom, qos_profile_sensor_data)
+        # la odometria que publica el driver (fuente y escala elegidas con 'go2 escala'), con la hora
+        # del PERRO: la misma que la nube -> se interpola por punto
+        self.create_subscription(Odometry, P("topico_odom", "/go2/odom_perro").value, self.cb_odom,
+                                 qos_profile_sensor_data)
         self.create_subscription(PointCloud2, self.topico, self.cb_nube, qos_profile_sensor_data)
         self.est = {"n": 0, "puntos": 0, "en_cuerpo_pct": 0.0, "sin_odom": 0, "ms": 0.0, "sin_tiempo": False,
                     "relojes_distintos": False}
