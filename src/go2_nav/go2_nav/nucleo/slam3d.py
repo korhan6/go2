@@ -286,6 +286,23 @@ class Rejilla(object):
             Vf[golpe] = True
         np.clip(Lf, L_MIN, L_MAX, out=Lf)
 
+    def liberar_cuerpo(self, x, y, yaw, largo=(0.45, -0.42), ancho=0.24):
+        """Donde ESTA el perro no hay pared: borra (libre) el rectangulo de su cuerpo + 5 cm. Sin esto
+        un fantasma o un recuerdo viejo bajo el cuerpo dejaba al perro "dentro" de un obstaculo y el
+        planificador fallaba con "Start occupied"."""
+        r = self.res
+        c, s_ = math.cos(yaw), math.sin(yaw)
+        xs = np.arange(largo[1], largo[0] + 1e-9, r * 0.7)
+        ys = np.arange(-ancho, ancho + 1e-9, r * 0.7)
+        gx, gy = np.meshgrid(xs, ys)
+        px = x + c * gx.ravel() - s_ * gy.ravel()
+        py = y + s_ * gx.ravel() + c * gy.ravel()
+        self._cubrir(np.c_[px, py])
+        k = np.unique(self._celdas(np.c_[px, py]))
+        Lf = self.L.reshape(-1)
+        Lf[k] = np.minimum(Lf[k], L_LIBRE - 0.1)
+        self.vista.reshape(-1)[k] = True
+
     def ocupacion(self, recortar=True):
         """-> (int8 HxW con -1/0/100, x0, y0). Recorta a lo visto (+1 m)."""
         d = np.full(self.L.shape, -1, np.int8)

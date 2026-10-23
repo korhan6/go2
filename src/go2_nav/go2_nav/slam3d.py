@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
@@ -25,18 +25,33 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64MultiArray, String
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
 from go2_nav_interfaces.srv import Comando
 
 from .mapa3d import nube_color
-from .nube import leer_xyz, quat_de_yaw, yaw_de_quat
+from .nube import leer_xyz, yaw_de_quat
 from .nucleo.mapa3d import colores, guardar_pcd
 from .nucleo.slam3d import (Registro, Rejilla, aplicar, ang, componer, guardar_pgm, inversa, limite_correccion,
                             submuestrear)
 
 MAPAS = os.path.expanduser("~/.go2_nav/mapas")
+
+
+def seguro(f):
+    """Un error en un calculo se avisa y se sigue (antes tumbaba el nodo y con el, el mapa)."""
+    import functools
+    import traceback
+
+    @functools.wraps(f)
+    def g(self, *a, **k):
+        try:
+            return f(self, *a, **k)
+        except Exception as e:
+            self.get_logger().error("%s: %r\n%s" % (f.__name__, e, traceback.format_exc(limit=3)),
+                                    throttle_duration_sec=5.0)
+    return g
 
 
 def tf_a_T(tf):
@@ -61,6 +76,7 @@ class Slam3D(Node):
         # correccion: propia (alinea cada nube contra el mapa 3D) | glim (map->odom sale del mapa
         # global de GLIM, con cierre de lazos; aca solo se dibujan los mapas 2D/3D)
         self.correccion = P("correccion", "propia").value
+        self.t_glim = 0.0           # si GLIM no manda (se cayo, no arranco) en 5 s: se corrige solo
 
         self.reg = Registro()
         self.T = (0.0, 0.0, 0.0, 0.0)                         # map -> odom
@@ -111,7 +127,8 @@ class Slam3D(Node):
             self.create_subscription(Odometry, P("topico_glim_corregido", "/glim_ros/odom_corrected").value,
                                      self.cb_glim_corregido, 10, callback_group=liviano)
             self.t_glim = 0.0
-        self.create_timer(0.05, self.publicar_tf, callback_group=MutuallyExclusiveCallbackGroup())
+        self.pub_corr = self.create_publisher(Float64MultiArray, "/go2/correccion", lat)
+        self.create_timer(0.1, self.publicar_tf, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(0.5, self.lazo, callback_group=pesado)
         self.create_timer(1.0, self.publicar_estado, callback_group=liviano)
         self.t_obst = 0.0
@@ -132,6 +149,7 @@ class Slam3D(Node):
         if len(self.odom_buf) > 400:
             del self.odom_buf[:100]
 
+    @seguro
     def cb_glim_corregido(self, m):
         """GLIM: pose de la IMU en 'map' (con cierre de lazos). map->odom = base_map * base_odom^-1,
         con nuestra odometria en el MISMO instante (mismo reloj del perro)."""
@@ -151,16 +169,16 @@ class Slam3D(Node):
         self.t_glim = time.monotonic()
         self.ult_ok = time.monotonic()
 
+    @seguro
     def publicar_tf(self):
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id, t.child_frame_id = "map", "odom"
-        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = self.T[:3]
-        r = t.transform.rotation
-        r.x, r.y, r.z, r.w = quat_de_yaw(self.T[3])
-        self.tfo.sendTransform(t)
+        """La correccion map->odom va al DRIVER (/go2/correccion), que publica el TF map->odom junto
+        con odom->base_link, con el MISMO sello y a 100 Hz. Antes lo publicaba este nodo: si se
+        atrasaba calculando el mapa, el TF quedaba viejo ("Transform data too old") y Nav2 abortaba
+        o veia al perro en dos lugares distintos."""
+        self.pub_corr.publish(Float64MultiArray(data=[float(v) for v in self.T]))
 
     # ---------------------------------------------------------------- alineacion 3D
+    @seguro
     def cb_nube(self, m):
         ahora = time.monotonic()
         if ahora - self.t_nube < 1.0 / max(self.hz, 0.5):
@@ -176,7 +194,7 @@ class Slam3D(Node):
             return
         d = np.hypot(p[:, 0] - lid[0], p[:, 1] - lid[1])
         T0 = self.T
-        if self.correccion == "glim" and not self.fijo:
+        if self.correccion == "glim" and not self.fijo and time.monotonic() - self.t_glim < 5.0:
             ok, info = True, {"inliers": 0, "frac": 1.0, "rms": 0.0, "motivo": ""}
             self.arranque = 0
         elif self.arranque > 0 and not self.fijo:
@@ -253,6 +271,7 @@ class Slam3D(Node):
         self.piso = k
         self.cambio_2d = True
 
+    @seguro
     def cb_pose_inicial(self, m):
         """'2D Pose Estimate' en RViz: el perro esta AQUI en el mapa."""
         base = self._tf("odom", "base_link")
@@ -269,6 +288,7 @@ class Slam3D(Node):
                                % (dest[0], dest[1], math.degrees(dest[3])))
 
     # ---------------------------------------------------------------- mapa 2D
+    @seguro
     def cb_obst(self, m):
         ahora = time.monotonic()
         if self.fijo or self.pausa or ahora - self.t_nube > 1.0 or ahora - self.t_obst < 0.3:
@@ -292,6 +312,10 @@ class Slam3D(Node):
         s = aplicar(self.T, s) if len(s) else s
         self.rej[self.piso].actualizar(sen[:2], o[:, :2] if len(o) else np.zeros((0, 2)),
                                        s[:, :2] if len(s) else None, alcance=self.alcance)
+        base = self._tf("odom", "base_link")
+        if base is not None:
+            bm = componer(self.T, base)
+            self.rej[self.piso].liberar_cuerpo(bm[0], bm[1], bm[3])
         self.cambio_2d = True
         self.est["ms_2d"] = round((time.perf_counter() - t0) * 1000, 1)
 
@@ -316,6 +340,7 @@ class Slam3D(Node):
         self.reg.vox.cambio = False
         self.t_3d = time.monotonic()
 
+    @seguro
     def lazo(self):
         self.reg.vox.fusionar()
         ahora = time.monotonic()
@@ -324,6 +349,7 @@ class Slam3D(Node):
         if self.reg.vox.cambio and ahora - self.t_3d > 2.0:
             self.publicar_3d()
 
+    @seguro
     def publicar_estado(self):
         e = dict(self.est)
         e.update(piso=self.piso, pisos=len(self.pisos), voxeles=int(len(self.reg.vox.k)),

@@ -46,7 +46,7 @@ def _slam(context):
             return [LogInfo(msg="!! NO EXISTE el mapa '%s' (%s.slam3d.npz). Mapas guardados: %s. "
                                 "Lanza sin mapa:= y guardalo con: go2 guardar_mapa %s"
                                 % (mapa, os.path.join(MAPAS, mapa), hay, mapa))]
-        return [Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+        return [Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen", respawn=True, respawn_delay=2.0,
                      parameters=[{"mapa": mapa}] + _ajustes()[0])]
     return _slam_toolbox(context) + [
         Node(package="go2_nav", executable="mapa3d", name="go2_mapa3d", output="screen",
@@ -66,7 +66,7 @@ def _glim(context, mapa):
         gpu = glim_config.hay_gpu(get_package_prefix("glim"))
     except Exception as e:
         return [LogInfo(msg="!! GLIM NO esta instalado (%s): 'go2 instalar_glim'. Sigo con slam:=go2" % e),
-                Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+                Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen", respawn=True, respawn_delay=2.0,
                      parameters=[{"mapa": mapa}] + _ajustes()[0])]
     modo = "odometria" if mapa else "mapeo"
     destino = glim_config.generar(origen, os.path.expanduser("~/.go2_nav/glim/" + modo), modo, gpu)
@@ -79,13 +79,15 @@ def _glim(context, mapa):
         Node(package="glim_ros", executable="glim_rosnode", name="glim_ros", output="screen",
              parameters=[{"config_path": destino}],
              remappings=[("/tf", "/glim/tf"), ("/tf_static", "/glim/tf_static")]),
-        Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen",
+        Node(package="go2_nav", executable="slam3d", name="go2_slam3d", output="screen", respawn=True, respawn_delay=2.0,
              parameters=[{"mapa": mapa, "correccion": "propia" if mapa else "glim"}] + _ajustes()[0]),
     ]
 
 
 def _driver(context):
     extra = _ajustes()[0]
+    if LaunchConfiguration("slam").perform(context) == "toolbox":
+        extra = extra + [{"tf_mapa": False}]                   # slam_toolbox publica su map->odom
     if LaunchConfiguration("slam").perform(context) == "glim":
         try:
             get_package_share_directory("glim_ros")
@@ -182,7 +184,7 @@ def _nube(context):
     if LaunchConfiguration("nube").perform(context) == "unitree" or sim:
         return [Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen",
                      parameters=extra)]
-    return [Node(package="go2_nav", executable="nube", name="go2_nube", output="screen", parameters=extra),
+    return [Node(package="go2_nav", executable="nube", name="go2_nube", output="screen", parameters=extra, respawn=True, respawn_delay=2.0),
             Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen",
                  parameters=[{"topico_nube": "/go2/nube_odom"}] + extra)]
 
@@ -263,7 +265,9 @@ def generate_launch_description():
         DeclareLaunchArgument("inicio_sim", default_value=""),
         DeclareLaunchArgument("puntos_sim", default_value="0"),        # 2500 = lidar ralo como el L1
         # al_final: termina el piso y despues toma las escaleras | inmediato | off
-        DeclareLaunchArgument("escaleras", default_value="al_final"),
+        # escaleras: off por defecto hasta validarlas en tu casa (con el L1 mal calibrado veia
+        # "escaleras de bajada" en el piso y el perro giraba a tomarlas). go2 escaleras al_final
+        DeclareLaunchArgument("escaleras", default_value="off"),
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off

@@ -31,8 +31,8 @@ from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Header
-from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Bool, Float32, String
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from std_msgs.msg import Bool, Float32, Float64MultiArray, String
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
@@ -126,6 +126,12 @@ class Driver(Node):
         self.ultima_pose = None
         self.enganche = {}
         self.t_glim = 0.0
+        # map->odom: lo publica este nodo con la correccion de go2_slam3d (con slam_toolbox, no)
+        self.tf_mapa = bool(p("tf_mapa", True).value)
+        self.correccion = (0.0, 0.0, 0.0, 0.0)
+        lat = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+        self.create_subscription(Float64MultiArray, "/go2/correccion",
+                                 lambda m: setattr(self, "correccion", tuple(m.data[:4])) if len(m.data) >= 4 else None, lat)
         self.t_sport_rapido = 0.0
         self.pub_odom_perro = self.create_publisher(Odometry, "/go2/odom_perro", 50)
         sd = qos_profile_sensor_data
@@ -255,7 +261,18 @@ class Driver(Node):
         t.child_frame_id = "base_link"
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = x, y, z
         t.transform.rotation = o.pose.pose.orientation
-        self.tf.sendTransform(t)
+        if self.tf_mapa:
+            # map->odom (correccion del SLAM, /go2/correccion) con el MISMO sello: Nav2 nunca ve
+            # un TF del mapa viejo ni dos poses distintas del perro
+            cx, cy, cz, cyaw = self.correccion
+            tm = TransformStamped()
+            tm.header.stamp = ahora
+            tm.header.frame_id, tm.child_frame_id = "map", "odom"
+            tm.transform.translation.x, tm.transform.translation.y, tm.transform.translation.z = cx, cy, cz
+            tm.transform.rotation.z, tm.transform.rotation.w = math.sin(cyaw / 2), math.cos(cyaw / 2)
+            self.tf.sendTransform([t, tm])
+        else:
+            self.tf.sendTransform(t)
         self.pose_xy = (x, y)
         self.n_odom += 1
         self.t_odom = time.monotonic()
