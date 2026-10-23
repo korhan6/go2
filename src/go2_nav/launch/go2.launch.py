@@ -6,6 +6,7 @@
     ros2 launch go2_nav go2.launch.py vision:=false  # sin la camara/YOLO
     ros2 launch go2_nav go2.launch.py mapa:=casa     # NAVEGAR con un mapa guardado (go2 guardar_mapa casa):
                                                      # el perro solo se ubica en el mapa (no lo cambia)
+    ros2 launch go2_nav go2.launch.py control:=false # sin el control PS4 (por defecto: si, si esta el paquete joy)
 
 Vision (go2_vision): corre con el Python de ~/.go2_nav/venv_vision (PyTorch + YOLO con CUDA, lo
 instala instalar.sh), aparte del Python del sistema que usa ROS.
@@ -96,6 +97,17 @@ def _vision_y_gestor(context):
                          parameters=[{"escaleras": LaunchConfiguration("escaleras").perform(context),
                                       "escaleras_vision": esc_vision,
                                       "mapa": LaunchConfiguration("mapa").perform(context).strip()}] + _ajustes()[0]))
+    # control PS4: joy (lee el DualShock por USB/Bluetooth; espera si aun no esta conectado) + go2_ps4
+    control = LaunchConfiguration("control").perform(context)
+    if control == "true" or (control == "auto" and not sim):
+        try:
+            get_package_share_directory("joy")
+            acciones += [Node(package="joy", executable="joy_node", name="joy_node", output="log",
+                              parameters=[{"deadzone": 0.05, "autorepeat_rate": 20.0}]),
+                         Node(package="go2_nav", executable="ps4", name="go2_ps4", output="screen")]
+        except Exception:
+            acciones.append(LogInfo(msg="control PS4 NO arranca: falta el paquete joy "
+                                        "(sudo apt install ros-$ROS_DISTRO-joy)"))
     if vision and not sim:
         if os.path.exists(VENV_PY):
             acciones.append(ExecuteProcess(
@@ -137,6 +149,7 @@ def generate_launch_description():
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
         DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
+        DeclareLaunchArgument("control", default_value="auto"),         # control PS4: auto (no en sim) | true | false
 
         Node(package="go2_nav", executable="perro_sim", name="go2_perro_sim", output="screen",
              parameters=[{"mundo": mundo, "fantasmas": ParameterValue(fantasmas, value_type=bool),

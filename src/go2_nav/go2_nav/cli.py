@@ -38,6 +38,10 @@
   go2 calibrar          gira 2 vueltas y aprende los puntos fantasma del propio perro
   go2 levantar          pone al perro de pie
   go2 log               ultimos mensajes
+  go2 control           asistente del control PS4: aprieta cada boton y mueve cada stick; guarda TU
+                        orden en ~/.go2_nav/ps4.yaml. Con el control: L1 + sticks = manejar,
+                        CIRCULO = parar todo, L1+PS = bajar la escalera, L1+OPTIONS = subirla
+  go2 diagnostico       mide el L1 con el perro QUIETO (8 s): nube, tiempos, relojes y la IMU del L1
   go2 costmap [global]  lo que Nav2 ve alrededor del perro, en texto (3 x 3 m): para mandar en una foto
   go2 nav2 [segundos]   junta los avisos y errores de Nav2 (20 s) y los resume: por que no avanza
 """
@@ -503,6 +507,151 @@ def ver(nodo):
         print()
 
 
+def control_asistente(nodo):
+    """Mide el orden de botones y ejes de TU control PS4 y lo guarda en ~/.go2_nav/ps4.yaml."""
+    import os
+    import subprocess
+    import yaml
+    from sensor_msgs.msg import Joy
+    ultimo = {"m": None}
+    nodo.create_subscription(Joy, "/joy", lambda m: ultimo.__setitem__("m", m), 10)
+
+    def esperar(seg):
+        fin = time.monotonic() + seg
+        while time.monotonic() < fin:
+            rclpy.spin_once(nodo, timeout_sec=0.05)
+
+    proc = None
+    esperar(1.5)
+    if nodo.count_publishers("/joy") == 0:
+        print("no hay nodo joy corriendo: lo arranco yo")
+        proc = subprocess.Popen(["ros2", "run", "joy", "joy_node"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        esperar(4.0)
+    try:
+        if ultimo["m"] is None:
+            print("NO llega nada por /joy. Revisa:\n"
+                  "  1) control prendido y conectado (USB, o Bluetooth emparejado: PS + SHARE hasta que parpadee)\n"
+                  "  2) que Linux lo vea:  ls /dev/input/js*   (vacio = no conectado)\n"
+                  "  3) permisos:  sudo usermod -aG input $USER  y cerrar sesion\n"
+                  "  4) que el paquete joy este:  sudo apt install ros-$ROS_DISTRO-joy")
+            return 1
+        m = ultimo["m"]
+        print("control detectado: %d botones, %d ejes. Suelta todo..." % (len(m.buttons), len(m.axes)))
+        esperar(1.5)
+        reposo_b, reposo_e = list(ultimo["m"].buttons), list(ultimo["m"].axes)
+        botones, ejes, signos = {}, {}, {}
+        for clave, nombre in (("l1", "L1 (gatillo superior IZQUIERDO)"), ("r1", "R1 (gatillo superior DERECHO)"),
+                              ("circulo", "CIRCULO"), ("cruz", "CRUZ (X)"), ("triangulo", "TRIANGULO"),
+                              ("cuadrado", "CUADRADO"), ("share", "SHARE"), ("options", "OPTIONS"),
+                              ("ps", "PS (boton central)")):
+            while True:
+                input("\n>>> Manten apretado %s y presiona Enter" % nombre)
+                esperar(0.6)
+                b = [i for i, (v, r) in enumerate(zip(ultimo["m"].buttons, reposo_b)) if v == 1 and r == 0]
+                if len(b) == 1:
+                    botones[clave] = b[0]
+                    print("    %s = boton %d. Sueltalo." % (nombre, b[0]))
+                    esperar(0.8)
+                    break
+                print("    no lo detecte bien (botones activos %s), otra vez" % b)
+        for clave, nombre in (("vx", "stick IZQUIERDO hacia ARRIBA"), ("vy", "stick IZQUIERDO hacia la IZQUIERDA"),
+                              ("wz", "stick DERECHO hacia la IZQUIERDA")):
+            while True:
+                input("\n>>> Mueve el %s hasta el tope, mantenlo y presiona Enter" % nombre)
+                esperar(0.6)
+                d = [v - r for v, r in zip(ultimo["m"].axes, reposo_e)]
+                i = max(range(len(d)), key=lambda k: abs(d[k]))
+                if abs(d[i]) > 0.5:
+                    ejes[clave], signos[clave] = i, (1.0 if d[i] > 0 else -1.0)
+                    print("    eje %d, signo %+d. Sueltalo." % (i, signos[clave]))
+                    esperar(0.8)
+                    break
+                print("    no vi movimiento, hasta el tope y otra vez")
+        ruta = os.path.expanduser("~/.go2_nav/ps4.yaml")
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w") as f:
+            f.write("# go2 control (%s)\n" % time.strftime("%Y-%m-%d %H:%M"))
+            yaml.safe_dump({"botones": botones, "ejes": ejes, "signos": signos}, f)
+        print("\nGuardado %s. Relanza 'go2 lanzar' para usarlo." % ruta)
+        return 0
+    finally:
+        if proc is not None:
+            proc.terminate()
+
+
+def diagnostico(nodo):
+    """El L1 de verdad, con el perro QUIETO: lo que cualquier odometria lidar necesita saber."""
+    import os
+    import numpy as np
+    from rclpy.qos import qos_profile_sensor_data
+    from sensor_msgs.msg import Imu, PointCloud2
+    from sensor_msgs_py import point_cloud2
+    nubes, imus = [], []
+    nodo.create_subscription(PointCloud2, "/utlidar/cloud", lambda m: nubes.append((time.time(), m)), qos_profile_sensor_data)
+    nodo.create_subscription(Imu, "/utlidar/imu", lambda m: imus.append((time.time(), m)), qos_profile_sensor_data)
+    T = 8.0
+    print("midiendo %.0f s... perro QUIETO, de pie, en piso plano" % T)
+    fin = time.monotonic() + T
+    while time.monotonic() < fin:
+        rclpy.spin_once(nodo, timeout_sec=0.05)
+    sello = lambda m: m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+    L = []
+    if not nubes:
+        L.append("/utlidar/cloud: NO LLEGA (cable? 'go2 lanzar' prende el lidar)")
+    else:
+        m = nubes[-1][1]
+        L.append("/utlidar/cloud: %.1f Hz, %d puntos, frame %s" % (len(nubes) / T, m.width * m.height, m.header.frame_id))
+        L.append("  campos: " + ", ".join("%s@%d(t%d)" % (f.name, f.offset, f.datatype) for f in m.fields))
+        campos = [f.name for f in m.fields if f.name in ("x", "y", "z", "time", "ring")]
+        a = point_cloud2.read_points(m, field_names=campos, skip_nans=True)
+        for c in ("time", "ring"):
+            if c in campos:
+                v = np.asarray(a[c], dtype=float)
+                L.append("  %s: %.4f .. %.4f" % (c, v.min(), v.max()))
+        r = np.linalg.norm(np.stack([np.asarray(a[k], dtype=float) for k in "xyz"], 1), axis=1)
+        L.append("  distancia: mediana %.2f m (lo de menos de ~0.4 m es el propio perro), max %.1f m" % (np.median(r), r.max()))
+        L.append("  reloj: llegada - sello = %.0f ms (el reloj del perro esta corrido; el driver usa la hora de la laptop)"
+                 % (1000 * np.median([t - sello(n) for t, n in nubes])))
+    if imus:
+        A = np.array([[i.linear_acceleration.x, i.linear_acceleration.y, i.linear_acceleration.z] for _, i in imus])
+        L.append("/utlidar/imu: %.0f Hz, |acc| %.2f, ruido %.2f m/s2 (el perro de pie vibra)"
+                 % (len(imus) / T, np.linalg.norm(A.mean(0)), A.std(0).max()))
+        if nubes:
+            P = np.vstack([np.stack([np.asarray(q[k], dtype=float) for k in "xyz"], 1)
+                           for q in (point_cloud2.read_points(n, field_names=("x", "y", "z"), skip_nans=True)
+                                     for _, n in nubes[-40:])])
+            P = P[(np.linalg.norm(P, axis=1) > 0.4) & (np.linalg.norm(P, axis=1) < 6.0)]
+            best, nb, db = 0, None, 0.0
+            rng = np.random.default_rng(0)
+            for _ in range(300):
+                p0, p1, p2 = P[rng.choice(len(P), 3, replace=False)]
+                nn = np.cross(p1 - p0, p2 - p0)
+                if np.linalg.norm(nn) < 1e-6:
+                    continue
+                nn /= np.linalg.norm(nn)
+                d = -nn @ p0
+                k = int((np.abs(P @ nn + d) < 0.03).sum())
+                if k > best:
+                    best, nb, db = k, nn, d
+            if nb is not None:
+                if db < 0:
+                    nb, db = -nb, -db
+                up = A.mean(0) / np.linalg.norm(A.mean(0))
+                ang = math.degrees(math.acos(max(-1.0, min(1.0, float(nb @ up)))))
+                yaw = math.degrees(math.atan2(nb[0] * up[1] - nb[1] * up[0], nb[0] * up[0] + nb[1] * up[1]))
+                L.append("piso visto por el L1 a %.2f m bajo el sensor; IMU del L1 vs piso: %.1f grados" % (db, ang))
+                L.append("  (para una odometria lidar-inercial propia: la IMU interna del L1 esta girada %.0f grados "
+                         "en z respecto a la nube; medido 122 en un Go2 el 23-oct-2026)" % yaw)
+    txt = "\n".join(L)
+    print(txt)
+    ruta = os.path.expanduser("~/.go2_nav/diagnostico_l1.txt")
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    with open(ruta, "w") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M") + "\n" + txt + "\n")
+    print("\nguardado en %s" % ruta)
+    return 0
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "ayuda"):
@@ -525,6 +674,10 @@ def main():
             return calibrar_mov(nodo)
         if args[0] == "altura":
             return altura(nodo, args[1:])
+        if args[0] == "control":
+            return control_asistente(nodo)
+        if args[0] == "diagnostico":
+            return diagnostico(nodo)
         if args[0] == "costmap":
             return costmap(nodo, args[1:])
         if args[0] == "nav2":

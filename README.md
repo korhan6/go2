@@ -1,5 +1,7 @@
 # go2_nav (ROS 2): navegación autónoma para el Go2 por cable
 
+[![pruebas](https://github.com/korhan6/go2/actions/workflows/pruebas.yml/badge.svg)](https://github.com/korhan6/go2/actions/workflows/pruebas.yml)
+
 La laptop se conecta al perro por **Ethernet**, igual que la mochila EDU de Unitree: queda en la
 red interna (192.168.123.x) y recibe por **DDS directo** el lidar (~15 Hz), la odometría
 (~150 Hz) y el estado. **No hay WebRTC, ni compresión, ni servidores en el medio**: la latencia
@@ -16,6 +18,7 @@ es de milisegundos.
 | Ruta comprometida | árbol de comportamiento oficial de Nav2 *"replanning only if path becomes invalid"* | calcula la ruta y la sigue hasta el final; solo replanifica si queda bloqueada |
 | `go2_gestor` | propio | exploración por fronteras **con compromiso** (`nucleo/exploracion.py`), escaleras y pisos, puntos guardados, estado en vivo |
 | `go2_escaleras` | propio (`nucleo/terreno.py`, `nucleo/escaleras.py`) | confirma escaleras (subida: lidar + cámara; bajada: lidar viendo el primer escalón) y las cruza: **sube de frente, baja en reversa** |
+| `go2_ps4` | propio (`nucleo/mando.py`) | **control PS4** (DualShock 4 por USB o Bluetooth): manejar con L1 + sticks, parar todo, subir/bajar escaleras y guardar puntos desde el control |
 | `go2_vision` | [YOLOv8](https://github.com/ultralytics/ultralytics) entrenado con Open Images V7 (600 clases) | la **cámara del perro** por el cable, YOLO en la **GPU** de la laptop: ve escaleras, personas, sillas, puertas... y las ubica en el mapa con la distancia del lidar |
 
 ### La huella (obstacle avoidance)
@@ -115,6 +118,43 @@ go2 ir B
 Mientras lo manejas, el mapa se arma solo (en RViz: gris = sin ver, transparente = suelo visto,
 morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 
+### Control PS4 (DualShock 4)
+Arranca solo con `go2 lanzar` (paquete `joy`; si el control no está conectado, espera a que lo
+conectes). Con L1 suelto **no manda nada**: Nav2 y la exploración siguen solos.
+
+| Botón | Qué hace |
+|---|---|
+| **mantener L1** + stick izquierdo | avanzar / retroceder / de lado (soltar L1 = el perro se para) |
+| **mantener L1** + stick derecho | girar |
+| L1 + R1 | rápido (0.6 m/s en vez de 0.4) |
+| **CÍRCULO** | **PARAR TODO** (exploración, ruta, escalera). Funciona sin L1 |
+| SHARE | pausa / seguir |
+| L1 + TRIÁNGULO | levantarse |
+| L1 + OPTIONS | subir la escalera que tiene delante (de frente) |
+| L1 + PS (botón central) | bajar la escalera que tiene delante (gira 180° y baja en reversa) |
+| L1 + CUADRADO | guardar un punto aquí (`control_1`, `control_2`, ...: `go2 ir control_1`) |
+
+- Mientras lo manejas, **frena solo** si hay algo a menos de 20 cm del cuerpo en esa dirección
+  (igual que `go2 manejar`) y el control **tiene prioridad sobre Nav2**.
+- Si el control se desconecta con L1 apretado, el perro se para y Nav2 recupera el mando.
+- **Si un botón no hace lo que dice la tabla:** el orden de botones depende del driver de Linux
+  (13 botones con el del kernel, 15-16 con SDL). Se elige solo, pero lo más seguro es medirlo una vez:
+  ```
+  go2 control      # aprieta cada botón y mueve cada stick cuando te lo pida -> ~/.go2_nav/ps4.yaml
+  ```
+  Si dice que no llega nada: control prendido/emparejado (PS + SHARE hasta que parpadee),
+  `ls /dev/input/js*`, y `sudo usermod -aG input $USER` (cerrar sesión).
+- Sin control: `go2 lanzar control:=false`.
+
+### Diagnóstico del L1 (`go2 diagnostico`)
+Con el perro **quieto, de pie y en piso plano**, mide 8 s y dice: Hz y puntos de la nube, el campo
+de tiempo por punto, qué parte de la nube es el propio perro, el desfase del reloj del perro y si la
+IMU interna del L1 coincide con el piso que ve el lidar. Lo guarda en `~/.go2_nav/diagnostico_l1.txt`
+(mándalo si algo del lidar se ve raro). Medido en un Go2 (23-oct-2026): 15 Hz, ~1100 puntos, la
+mitad a menos de 25 cm (el cuerpo), reloj del perro 3.5 s atrasado, y la IMU interna del L1
+**girada 122° en z** respecto a la nube: por eso go2_nav usa la odometría del propio perro
+(`/utlidar/robot_odom`) y no una odometría lidar-inercial con la IMU del L1.
+
 ### Qué muestra RViz
 - **El perro de verdad** (modelo 3D de Unitree) en vez de la caja: las patas se mueven con los
   ángulos reales de los motores. La caja (la huella de Nav2) y la zona de frenado siguen en la
@@ -196,6 +236,7 @@ pasado). Ahora:
 | `guardar A` → explorar → `ir A` | llega a 3 cm de A |
 | `calibrar` con fantasmas pegados al cuerpo | adelante 0.17 → 3.06 m; luego explora normal |
 | Tu grabación real (18-oct) por el limpiador | lados limpios, 0 caídas falsas con 19 % de reflejos, 3 ms por nube |
+| Control PS4: orden kernel (13 botones) y SDL (16), hombre muerto, CÍRCULO sin L1, L1+PS = bajar, frenos a 20 cm, zona muerta del stick (`prueba_mando.py`, también en GitHub Actions) | todo OK |
 | **Piso brillante** con una mesa delante, girando 20 s (`prueba_brillo.py`, con Nav2) | celdas de obstáculo falsas en el mapa de costos local: 57 → 0; caídas y escaleras de bajada falsas: 0 |
 
 ## Visión por computadora (cámara + YOLO en la GPU)

@@ -33,7 +33,7 @@ fi
 echo "== Paquetes (Nav2, slam_toolbox, CycloneDDS, RViz)"
 sudo apt-get update
 sudo apt-get install -y ros-$DISTRO-ros-base ros-$DISTRO-navigation2 ros-$DISTRO-slam-toolbox \
-  ros-$DISTRO-rmw-cyclonedds-cpp ros-$DISTRO-rosidl-generator-dds-idl ros-$DISTRO-rviz2 ros-$DISTRO-nav2-rviz-plugins \
+  ros-$DISTRO-rmw-cyclonedds-cpp ros-$DISTRO-rosidl-generator-dds-idl ros-$DISTRO-rviz2 ros-$DISTRO-nav2-rviz-plugins ros-$DISTRO-joy \
   python3-colcon-common-extensions python3-numpy python3-scipy git
 
 echo "== Red: buffers grandes para las nubes del lidar"
