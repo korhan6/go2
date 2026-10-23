@@ -31,7 +31,8 @@ from go2_nav_interfaces.srv import Comando
 from .mapa3d import nube_color
 from .nube import leer_xyz, quat_de_yaw, yaw_de_quat
 from .nucleo.mapa3d import colores, guardar_pcd
-from .nucleo.slam3d import Registro, Rejilla, aplicar, ang, componer, guardar_pgm, inversa, submuestrear
+from .nucleo.slam3d import (Registro, Rejilla, aplicar, ang, componer, guardar_pgm, inversa, limite_correccion,
+                            submuestrear)
 
 MAPAS = os.path.expanduser("~/.go2_nav/mapas")
 
@@ -66,7 +67,8 @@ class Slam3D(Node):
         self.pausa = False
         self.ult_ok = 0.0
         self.seguidas_mal = 0
-        self.est = {"aceptadas": 0, "descartadas": 0, "rms": None, "inliers": 0, "ms": 0.0}
+        self.est = {"aceptadas": 0, "descartadas": 0, "rms": None, "inliers": 0, "ms": 0.0, "motivo": ""}
+        self.base_ok = None                                   # odom del perro en la ultima nube aceptada
         self.t_nube = 0.0
         self.suelo = None
         self.cambio_2d = True
@@ -138,17 +140,33 @@ class Slam3D(Node):
             ancho = self.reubicar > 0
             Tn, info = self.reg.alinear(submuestrear(p[d < self.alcance_match], 0.10), T0,
                                         d_max=1.0 if ancho else 0.5, iters=15 if ancho else 10)
-            salto = math.hypot(Tn[0] - T0[0], Tn[1] - T0[1]) + abs(Tn[2] - T0[2])
+            # cuanto mueve AL PERRO la nueva correccion, contra lo que la odometria puede derivar
+            # desde la ultima nube aceptada (nucleo/slam3d.limite_correccion)
+            b = np.array([[base[0], base[1], base[2]]])
+            pa, pb = aplicar(T0, b)[0], aplicar(Tn, b)[0]
+            salto = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
             giro = abs(ang(Tn[3] - T0[3]))
-            lim = 3.0 if ancho else 1.0
+            if ancho or self.base_ok is None:
+                lxy, lgiro = self.salto_max * 3.0, self.giro_max * 3.0
+            else:
+                lxy, lgiro = limite_correccion(math.hypot(base[0] - self.base_ok[0], base[1] - self.base_ok[1]),
+                                               ang(base[3] - self.base_ok[3]))
+                lxy, lgiro = min(lxy, self.salto_max), min(lgiro, self.giro_max)
             ok = (info["inliers"] >= self.min_inliers and info["frac"] >= self.min_frac
-                  and salto < self.salto_max * lim and giro < self.giro_max * lim)
+                  and salto <= lxy and giro <= lgiro and abs(pb[2] - pa[2]) < 0.2)
+            if not ok and not info.get("motivo"):
+                if info["inliers"] < self.min_inliers or info["frac"] < self.min_frac:
+                    info["motivo"] = "calzan %d puntos (%.0f %%)" % (info["inliers"], 100 * info["frac"])
+                else:
+                    info["motivo"] = ("pedia mover al perro %.2f m / %.1f grados (limite %.2f m / %.1f): "
+                                      "descartada" % (salto, math.degrees(giro), lxy, math.degrees(lgiro)))
             if self.reubicar > 0:
                 self.reubicar -= 1
             if ok:
                 self.T = Tn
         if ok:
             self.ult_ok = ahora
+            self.base_ok = base
             self.seguidas_mal = 0
             self.est["aceptadas"] += 1
             if not self.fijo:
@@ -159,10 +177,11 @@ class Slam3D(Node):
             self.est["descartadas"] += 1
             if self.seguidas_mal in (15, 60, 300):
                 self.get_logger().warn(
-                    "no calzo con el mapa hace %d nubes (inliers %d, %.0f %%): sigo con la odometria del perro"
-                    % (self.seguidas_mal, info.get("inliers", 0), 100 * info.get("frac", 0.0)))
+                    "no calzo con el mapa hace %d nubes (%s): sigo con la odometria del perro"
+                    % (self.seguidas_mal, info.get("motivo", "")))
         self.est.update(rms=round(info.get("rms", 0.0), 3), inliers=info.get("inliers", 0),
-                        ms=round((time.perf_counter() - t0) * 1000, 1))
+                        ms=round((time.perf_counter() - t0) * 1000, 1),
+                        motivo="" if ok else info.get("motivo", ""), planos=info.get("planos", 0))
 
     def ver_piso(self, base):
         """Otro piso (despues de una escalera): otro mapa 2D. El 3D es uno solo para toda la casa."""
@@ -314,11 +333,12 @@ class Slam3D(Node):
             e = dict(self.est)
             res.ok = True
             res.mensaje = ("SLAM 3D: %d voxeles, piso %d de %d, correccion x=%.2f y=%.2f giro=%.1f grados, "
-                           "ultima alineacion %s (inliers %s, rms %s m, %s ms)"
+                           "ultima alineacion buena %s (inliers %s, planos %s, rms %s m, %s ms)%s"
                            % (len(self.reg.vox.k), self.piso, len(self.pisos), self.T[0], self.T[1],
                               math.degrees(self.T[3]),
                               "hace %.1f s" % (time.monotonic() - self.ult_ok) if self.ult_ok else "nunca",
-                              e["inliers"], e["rms"], e["ms"]))
+                              e["inliers"], e.get("planos"), e["rms"], e["ms"],
+                              ("\n  ultima descartada: " + e["motivo"]) if e.get("motivo") else ""))
             res.json = json.dumps(e)
         return res
 

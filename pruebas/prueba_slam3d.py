@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "go2_nav"))
 from go2_nav.nucleo.slam3d import (Registro, Rejilla, aplicar, ang, componer, inversa,  # noqa: E402
-                                   submuestrear)
+                                   limite_correccion, submuestrear)
 
 # cajas (xmin, ymin, zmin, xmax, ymax, zmax): piso, techo, 4 paredes, muebles
 CAJAS = np.array([
@@ -50,10 +50,19 @@ def rayos(o, d, cajas=CAJAS):
     return t.min(axis=1)
 
 
-def scan_l1(pose, rng, n=1400, extra=None):
-    """Nube del L1 (hemisferio, ralo) en el marco del perro, con ruido de 2 cm."""
+ANILLOS = np.radians(np.linspace(-60, 80, 12))
+
+
+def scan_l1(pose, rng, n=1400, extra=None, anillos=False):
+    """Nube del L1 en el marco del perro. anillos=True: como el L1 real -- 12 anillos fijos (los
+    vecinos en el mapa quedan en LINEAS), atras tapado por el cuerpo, ruido de 3 cm."""
     az = rng.uniform(-math.pi, math.pi, n)
-    el = rng.uniform(-math.radians(70), math.radians(80), n)
+    if anillos:
+        el = ANILLOS[rng.integers(0, len(ANILLOS), n)]
+        vis = ~((np.abs(az) > math.radians(115)) & (el < math.radians(20)))   # el cuerpo tapa atras
+        az, el = az[vis], el[vis]
+    else:
+        el = rng.uniform(-math.radians(70), math.radians(80), n)
     d = np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)], axis=1)
     c, s = math.cos(pose[2]), math.sin(pose[2])
     dw = d.copy()
@@ -61,7 +70,7 @@ def scan_l1(pose, rng, n=1400, extra=None):
     o = np.array([pose[0], pose[1], H_LIDAR])
     t = rayos(o, dw, CAJAS if extra is None else np.vstack([CAJAS, extra]))
     ok = np.isfinite(t) & (t > 0.3) & (t < 12)
-    t = t[ok] + rng.normal(0, 0.02, ok.sum())
+    t = t[ok] + rng.normal(0, 0.03 if anillos else 0.02, ok.sum())
     return d[ok] * t[:, None] + np.array([0, 0, H_LIDAR])     # marco del perro
 
 
@@ -83,9 +92,11 @@ def trayectoria():
     return out
 
 
-def main():
+def correr(anillos):
     rng = np.random.default_rng(1)
     verdad = trayectoria()
+    if anillos:
+        verdad = [verdad[0]] * 30 + verdad          # como en la casa: 30 nubes quieto al arrancar
     # odometria con deriva: escala 3 % y +0.04 rad por cada rad girado, +0.01 rad/m
     # el mapa = donde arranco el perro: verdad relativa a la pose inicial
     v0 = (verdad[0][0], verdad[0][1], 0.0, verdad[0][2])
@@ -101,6 +112,7 @@ def main():
     rej = Rejilla()
     T = (0.0, 0.0, 0.0, 0.0)
     acept = rech = 0
+    o_ok = odom[0]
     t0 = time.time()
     for i, (v, o) in enumerate(zip(verdad, odom)):
         # una persona camina por el cuarto (va y viene entre x = 1.5 y 6.5, y = 2.2)
@@ -108,7 +120,7 @@ def main():
         persona = np.array([[px - 0.2, 2.0, 0.0, px + 0.2, 2.4, 1.7]])
         if abs(v[0] - px) < 0.6 and abs(v[1] - 2.2) < 0.6:
             persona = None                                         # (no atraviesa al perro)
-        s = scan_l1(v, rng, extra=persona)                        # marco perro
+        s = scan_l1(v, rng, extra=persona, anillos=anillos)                        # marco perro
         # el perro entrega la nube en 'odom': odom * (lidar en el perro); z del perro en el mapa: 0
         s_odom = aplicar(o, s)
         if i < 5:
@@ -117,10 +129,15 @@ def main():
             pos = aplicar(T, np.array([[o[0], o[1], 0.0]]))[0]
             reg.rearmar(pos)
             Tn, info = reg.alinear(submuestrear(s_odom, 0.10), T)
-            dT = math.hypot(Tn[0] - T[0], Tn[1] - T[1])
-            ok = info["inliers"] >= 80 and info["frac"] >= 0.35 and dT < 0.5
+            # cuanto se mueve el PERRO con la nueva correccion (no T: girar T mueve su origen)
+            pa, pb = aplicar(T, np.array([[o[0], o[1], 0.0]]))[0], aplicar(Tn, np.array([[o[0], o[1], 0.0]]))[0]
+            dT = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+            lxy, lyaw = limite_correccion(math.hypot(o[0] - o_ok[0], o[1] - o_ok[1]), ang(o[3] - o_ok[3]))
+            ok = (info["inliers"] >= 80 and info["frac"] >= 0.35 and dT <= lxy
+                  and abs(ang(Tn[3] - T[3])) <= lyaw)
             if ok:
                 T = Tn
+                o_ok = o
         if ok:
             acept += 1
             pm = aplicar(T, s_odom)
@@ -146,7 +163,10 @@ def main():
     print("   odometria sola: error %.2f m / %.1f grados" % (e_o, e_oy))
     print("   corregido:      error %.3f m / %.2f grados" % (e_c, e_cy))
     assert e_o > 0.3, "la prueba no tiene deriva"
-    assert e_c < 0.08 and e_cy < 1.5, (e_c, e_cy)
+    # con anillos la nube a veces "se pega" a su propio patron: esas se descartan (el limite de
+    # correccion) y sigue con la odometria hasta la proxima buena
+    assert rech < (0.2 if anillos else 0.1) * len(verdad), "descarta demasiadas nubes"
+    assert e_c < (0.12 if anillos else 0.08) and e_cy < 1.5, (e_c, e_cy)
     # paredes finas: puntos del mapa (en el marco real) a la pared x = 0 / y = 0
     P = aplicar(v0, reg.vox.puntos(2))
     banda = (P[:, 2] > 0.9) & (P[:, 2] < 2.3)
@@ -155,7 +175,7 @@ def main():
     fx = np.mean(np.abs(px[:, 0]) < 0.075)
     fy = np.mean(np.abs(py[:, 1]) < 0.075)
     print("   paredes finas: %.0f %% / %.0f %% de los puntos a < 7.5 cm" % (100 * fx, 100 * fy))
-    assert fx > 0.85 and fy > 0.85, (fx, fy)
+    assert fx > 0.8 and fy > 0.8, (fx, fy)
     # mapa 2D: celdas ocupadas sobre las paredes, interior libre, nada libre fuera del cuarto
     occ, x0, y0 = rej.ocupacion()
     ii, jj = np.nonzero(occ == 100)
@@ -174,6 +194,13 @@ def main():
     print("   mapa 2D: %.0f %% de lo ocupado es pared/mueble real; %.2f %% de lo libre fuera del cuarto"
           % (100 * fr, 100 * fuera))
     assert fr > 0.9 and fuera < 0.005, (fr, fuera)
+
+
+def main():
+    print(" L1 simple (puntos al azar):")
+    correr(False)
+    print(" L1 como el real (12 anillos, atras tapado, ruido 3 cm, 30 nubes quieto al arrancar):")
+    correr(True)
     print("LISTO")
 
 

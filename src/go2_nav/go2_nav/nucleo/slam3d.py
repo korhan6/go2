@@ -66,6 +66,15 @@ def submuestrear(p, res):
 
 
 # ---------------------------------------------------------------- alineacion
+def limite_correccion(dist, giro, rel=0.06):
+    """Cuanto puede cambiar la correccion desde la ultima nube aceptada, segun lo que el perro se
+    movio desde entonces: la odometria del perro no deriva mas de ~6 % de lo recorrido/girado.
+    Una alineacion que pide mas NO es deriva: es el mapa confundiendo la nube consigo misma
+    (pasa con lidares ralos: la nube 'se pega' a su propio patron y arrastra al perro hacia atras).
+    -> (m, rad)"""
+    return 0.02 + rel * dist, math.radians(0.5) + rel * abs(giro) + math.radians(1.0) * dist
+
+
 class Registro(object):
     """Mapa 3D (voxeles) + alineacion de cada nube contra el."""
 
@@ -104,44 +113,61 @@ class Registro(object):
         self.arbol_n = len(self.vox.k)
         return True
 
-    def alinear(self, scan, T0, d_max=0.5, iters=10, huber=0.05, prior=50.0):
+    def _planos(self, p, radio, K=24):
+        """Plano local del mapa alrededor de cada punto: vecinos en una ESFERA de 'radio' (no los k
+        mas cercanos: con el L1, que barre en anillos, los k mas cercanos caen en la misma linea
+        y no definen plano). -> (validos, centro, normal, distancia al mas cercano)."""
+        K = min(K, len(self.pts))
+        d, idx = self.arbol.query(p, k=K, distance_upper_bound=radio)
+        vec = np.isfinite(d)
+        nv = vec.sum(axis=1)
+        idx = np.where(vec, idx, idx[:, :1] * 0)
+        Q = self.pts[np.minimum(idx, len(self.pts) - 1)]
+        m = vec[:, :, None]
+        nvs = np.maximum(nv, 1)[:, None]
+        c = (Q * m).sum(axis=1) / nvs
+        A = (Q - c[:, None, :]) * m
+        w_, v_ = np.linalg.eigh(np.einsum("nki,nkj->nij", A, A) / nvs[:, :, None])
+        ok = ((nv >= 6) & (w_[:, 1] > 0.05 ** 2) & (w_[:, 0] < 0.1 * w_[:, 1])
+              & (w_[:, 0] < 0.035 ** 2))
+        return ok, c, v_[:, :, 0], d[:, 0]
+
+    def alinear(self, scan, T0, d_max=0.5, iters=12, huber=0.05, prior_xy=2500.0, prior_yaw=40000.0):
         """scan: Nx3 en 'odom' (submuestreado). T0: correccion inicial (map->odom).
-        Devuelve (T, info). info: inliers, frac, rms, cond (debil si < ~0.05: pasillo largo)."""
-        info = {"inliers": 0, "validos": 0, "frac": 0.0, "rms": 9.9, "cond": 0.0, "iters": 0}
-        if self.arbol is None or len(scan) < 30:
+        Devuelve (T, info). info: inliers, frac, rms, planos, motivo (si no se pudo).
+
+        Punto-a-plano con planos del mapa de 30-50 cm (juntan varios anillos del L1). La
+        correccion de una nube a la siguiente casi no cambia: el 'prior' (2 cm, 0.3 grados) la
+        frena en las direcciones que la nube no ve (un pasillo, solo el suelo) en vez de dejarla
+        girar sola."""
+        info = {"inliers": 0, "validos": 0, "frac": 0.0, "rms": 9.9, "iters": 0, "planos": 0, "motivo": ""}
+        if self.arbol is None:
+            info["motivo"] = "mapa local vacio"
+            return T0, info
+        if len(scan) < 30:
+            info["motivo"] = "nube con %d puntos" % len(scan)
             return T0, info
         T = np.array(T0, dtype=np.float64)
         T0a = np.array(T0, dtype=np.float64)
+        Hp = np.diag([prior_xy, prior_xy, prior_xy, prior_yaw])
         dm = d_max
-        Hp = np.diag([prior, prior, prior, prior * 4.0])
         for it in range(iters):
             p = aplicar(T, scan)
-            d, idx = self.arbol.query(p, k=5, distance_upper_bound=dm)
-            ok = np.isfinite(d).all(axis=1)
+            radio = 0.5 if it < 3 else 0.35
+            ok, c, nrm, d0 = self._planos(p, radio)
+            ok &= d0 < dm
+            info["planos"] = int(ok.sum())
             if ok.sum() < 30:
-                info["validos"] = int(ok.sum())
+                info["motivo"] = "solo %d planos del mapa cerca de la nube" % ok.sum()
                 return tuple(T0), info
-            p = p[ok]
-            Q = self.pts[idx[ok]]                         # (n, 5, 3)
-            c = Q.mean(axis=1)
-            A = Q - c[:, None, :]
-            C = np.einsum("nki,nkj->nij", A, A)
-            w_, v_ = np.linalg.eigh(C)
-            nrm = v_[:, :, 0]                             # normal = menor autovalor
-            plano = np.abs(np.einsum("nki,ni->nk", A, nrm)).max(axis=1) < 0.06
-            # planos de verdad: el menor autovalor bien chico frente al del medio
-            plano &= w_[:, 0] < 0.15 * np.maximum(w_[:, 1], 1e-9)
-            if plano.sum() < 30:
-                info["validos"] = int(plano.sum())
-                return tuple(T0), info
-            p, c, nrm = p[plano], c[plano], nrm[plano]
+            p, c, nrm = p[ok], c[ok], nrm[ok]
             r = np.einsum("ni,ni->n", p - c, nrm)
             a = np.abs(r)
             w = np.where(a < huber, 1.0, huber / np.maximum(a, 1e-9))
-            dyaw = np.stack([-(p[:, 1] - T[1]), p[:, 0] - T[0]], axis=1)
+            w[a > 0.3] = 0.0
             J = np.empty((len(p), 4))
             J[:, :3] = nrm
-            J[:, 3] = nrm[:, 0] * dyaw[:, 0] + nrm[:, 1] * dyaw[:, 1]
+            J[:, 3] = nrm[:, 0] * -(p[:, 1] - T[1]) + nrm[:, 1] * (p[:, 0] - T[0])
             Jw = J * w[:, None]
             H = (J.T @ Jw) / (0.03 ** 2)
             g = (Jw.T @ r) / (0.03 ** 2)
@@ -152,26 +178,20 @@ class Registro(object):
             T[3] = ang(T[3])
             info["iters"] = it + 1
             if it >= 2:
-                dm = max(0.15, dm * 0.6)
-            if abs(dx[0]) + abs(dx[1]) + abs(dx[2]) < 1e-3 and abs(dx[3]) < 2e-4:
+                dm = max(0.15, dm * 0.7)
+            if abs(dx[0]) + abs(dx[1]) + abs(dx[2]) < 5e-4 and abs(dx[3]) < 1e-4:
                 break
-        # calidad final
         p = aplicar(T, scan)
-        d, idx = self.arbol.query(p, k=5, distance_upper_bound=0.3)
-        ok = np.isfinite(d).all(axis=1)
-        if ok.sum():
-            Q = self.pts[idx[ok]]
-            c = Q.mean(axis=1)
-            A = Q - c[:, None, :]
-            w_, v_ = np.linalg.eigh(np.einsum("nki,nkj->nij", A, A))
-            r = np.abs(np.einsum("ni,ni->n", p[ok] - c, v_[:, :, 0]))
-            ins = r < 0.08
-            info["inliers"] = int(ins.sum())
-            info["validos"] = int(ok.sum())
-            info["frac"] = float(ins.sum()) / len(scan)
-            info["rms"] = float(np.sqrt(np.mean(r[ins] ** 2))) if ins.any() else 9.9
-            ev = np.linalg.eigvalsh(H)
-            info["cond"] = float(ev[0] / max(ev[-1], 1e-9))
+        ok, c, nrm, d0 = self._planos(p, 0.35)
+        ok &= d0 < 0.3
+        r = np.abs(np.einsum("ni,ni->n", p[ok] - c[ok], nrm[ok]))
+        ins = r < 0.08
+        info["inliers"] = int(ins.sum())
+        info["validos"] = int(ok.sum())
+        info["frac"] = float(ins.sum()) / max(1, int(ok.sum()))
+        info["rms"] = float(np.sqrt(np.mean(r[ins] ** 2))) if ins.any() else 9.9
+        if info["inliers"] < 30:
+            info["motivo"] = "solo %d puntos calzan" % info["inliers"]
         return tuple(T), info
 
     def insertar(self, puntos_mapa):
@@ -180,7 +200,7 @@ class Registro(object):
 
 
 # ---------------------------------------------------------------- mapa 2D (ocupacion)
-L_HIT, L_MISS, L_MIN, L_MAX = 0.85, -0.40, -2.0, 3.5
+L_HIT, L_MISS, L_MISS_SUELO, L_MIN, L_MAX = 0.85, -0.40, -0.15, -2.0, 3.5
 L_OCUP, L_LIBRE = 0.80, -0.35
 
 
@@ -220,6 +240,20 @@ class Rejilla(object):
         ok = (i >= 0) & (i < h) & (j >= 0) & (j < w)
         return i[ok] * w + j[ok]
 
+    def _rayos(self, s, fin, recorte):
+        if len(fin) == 0:
+            return np.zeros(0, np.int64)
+        v = fin - s
+        d = np.hypot(v[:, 0], v[:, 1])
+        n = np.maximum(1, (d / (self.res * 0.5)).astype(np.int64))
+        tot = int(n.sum())
+        rep = np.repeat(np.arange(len(fin)), n)
+        k = np.arange(tot) - np.repeat(np.cumsum(n) - n, n)
+        t = k / np.repeat(n, n)
+        dd = np.repeat(d, n)
+        ok = t * dd <= dd - recorte
+        return self._celdas(s + v[rep[ok]] * t[ok, None])
+
     def actualizar(self, sensor_xy, golpes_xy, libres_xy=None, alcance=8.0):
         """golpes: obstaculos (fin de rayo). libres: suelo visto (libre sin rayo)."""
         s = np.asarray(sensor_xy, np.float64)
@@ -234,28 +268,17 @@ class Rejilla(object):
         self._cubrir(np.vstack([g, lib, s[None, :]]))
         Lf = self.L.reshape(-1)
         Vf = self.vista.reshape(-1)
-        libres = []
-        if len(g):
-            # rayos: muestras cada media celda desde el sensor hasta una celda antes del golpe
-            v = g - s
-            d = np.hypot(v[:, 0], v[:, 1])
-            n = np.maximum(1, (d / (self.res * 0.5)).astype(np.int64))
-            tot = int(n.sum())
-            if tot > 0:
-                rep = np.repeat(np.arange(len(g)), n)
-                k = np.arange(tot) - np.repeat(np.cumsum(n) - n, n)
-                t = k / np.repeat(n, n)
-                fin = (t * np.repeat(d, n)) < (np.repeat(d, n) - self.res * 1.5)
-                pts = s + v[rep[fin]] * t[fin, None]
-                libres.append(self._celdas(pts))
-        if len(lib):
-            libres.append(self._celdas(lib))
+        # rayos: a los obstaculos (hasta una celda y media antes) y al SUELO visto (hasta el punto):
+        # el suelo llena el abanico entre rayo y rayo (con el L1 ralo, solo con los obstaculos el
+        # mapa salia como una estrella de rayos)
+        # (los rayos al suelo pesan menos: pasan por ENCIMA de lo bajo -- una caja -- y no lo deben borrar)
         golpe = np.unique(self._celdas(g)) if len(g) else np.zeros(0, np.int64)
-        if libres:
-            li = np.unique(np.concatenate(libres))
-            li = np.setdiff1d(li, golpe, assume_unique=True)
-            Lf[li] += L_MISS
-            Vf[li] = True
+        li_o = np.setdiff1d(np.unique(self._rayos(s, g, self.res * 1.5)), golpe, assume_unique=True)
+        li_s = np.setdiff1d(np.unique(self._rayos(s, lib, 0.0)), np.concatenate([golpe, li_o]))
+        Lf[li_o] += L_MISS
+        Lf[li_s] += L_MISS_SUELO
+        Vf[li_o] = True
+        Vf[li_s] = True
         if len(golpe):
             Lf[golpe] += L_HIT
             Vf[golpe] = True

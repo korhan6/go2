@@ -179,6 +179,12 @@ muebles, techo):
 4. el **mapa 2D** (`/map`, el de Nav2) sale de los obstáculos y el suelo ya alineados, con rayos
    (log-odds): pared = vista muchas veces, sin rayos sueltos. Uno por piso (cambia solo).
 
+El L1 barre en anillos: si la nube "se pega" a su propio patrón, la alineación pediría mover al
+perro más de lo que la odometría puede derivar (6 % de lo recorrido): esa nube se descarta.
+`go2 mapa3d` dice la última descartada y por qué. `go2 escala` mide si la odometría mide bien
+(frente a una pared, avanza 0.6 m y compara con el lidar). `go2 grabar` graba todo para afinarlo
+sin el perro.
+
 Volver a pasar por un lugar ya mapeado lo re-alinea: la deriva no se acumula. Probado sin ROS en un
 cuarto simulado con una odometría que deriva 1.5 m / 38° y una persona caminando: queda en 4 cm /
 0.1° (`pruebas/prueba_slam3d.py`). `go2 mapa3d` dice cómo va. El de antes: `go2 lanzar slam:=toolbox`.

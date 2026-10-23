@@ -22,6 +22,9 @@
   go2 subir | bajar     toma a mano la escalera que tiene delante (subir = de frente;
                         bajar = gira 180 y baja SIEMPRE en reversa)
   go2 probar_mov        mide si el perro HACE lo que se le pide (gira 3 s y avanza 2 s; 1 m libre delante)
+  go2 grabar            graba lo del lidar y la odometria (~/go2_bags/FECHA) para afinar el SLAM sin el perro
+  go2 escala            mide si la odometria mide bien las distancias: frente a una pared avanza ~0.6 m y
+                        compara la odometria con lo que se acerco la pared segun el lidar
   go2 calibrar_mov      mide la respuesta real del perro (adelante/atras y giros, ~40 s, 1 m libre delante
                         y detras) y la COMPENSA: pide lo necesario para que haga lo que Nav2 quiere
   go2 camara            lo que ve la camara en vivo (YOLO en la GPU): fps, objetos, escalera
@@ -259,6 +262,103 @@ def probar_mov(nodo):
               "   mandandole ordenes o la CPU del perro saturada: ver README).")
     else:
         print("\nOK: el perro obedece las ordenes de velocidad.")
+    return 0
+
+
+def escala(nodo):
+    """Mide si la odometria del perro mide bien las distancias: frente a una pared, avanza ~0.6 m y
+    compara lo que dice la odometria con lo que se acerco la pared segun el lidar."""
+    import numpy as np
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
+    from rclpy.qos import qos_profile_sensor_data
+    from sensor_msgs.msg import PointCloud2
+    from .nube import leer_xyz
+    od, nubes = {}, []
+
+    def cb_od(m):
+        q = m.pose.pose.orientation
+        od["p"] = (m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z,
+                   math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+    nodo.create_subscription(Odometry, "/odom", cb_od, 10)
+    nodo.create_subscription(PointCloud2, "/go2/nube_sin_fantasmas",
+                             lambda m: nubes.append((leer_xyz(m), od.get("p"))), qos_profile_sensor_data)
+    pub = nodo.create_publisher(Twist, "cmd_vel_prioridad", 10)
+    cli = nodo.create_client(Comando, "/go2/comando")
+    if cli.wait_for_service(timeout_sec=3.0):
+        r = Comando.Request()
+        r.orden = "parar"
+        rclpy.spin_until_future_complete(nodo, cli.call_async(r), timeout_sec=5.0)
+
+    def esperar(seg, tw=None):
+        t = time.monotonic()
+        while time.monotonic() - t < seg:
+            if tw is not None:
+                pub.publish(tw)
+            rclpy.spin_once(nodo, timeout_sec=0.05)
+
+    def pared(seg=2.0):
+        """Distancia a la pared de delante (marco del perro), mediana de varias nubes."""
+        del nubes[:]
+        esperar(seg)
+        ds = []
+        for xyz, p in nubes:
+            if p is None or len(xyz) == 0:
+                continue
+            c, s_ = math.cos(p[3]), math.sin(p[3])
+            dx, dy = xyz[:, 0] - p[0], xyz[:, 1] - p[1]
+            fx, fy, h = c * dx + s_ * dy, -s_ * dx + c * dy, xyz[:, 2] - p[2]
+            sel = (np.abs(fy) < 0.3) & (h > -0.05) & (h < 0.6) & (fx > 0.45) & (fx < 5.0)
+            if sel.sum() >= 5:
+                ds.append(float(np.percentile(fx[sel], 10)))
+        return (float(np.median(ds)), len(ds)) if len(ds) >= 3 else (None, len(ds))
+
+    esperar(1.0)
+    if "p" not in od:
+        print("no llega /odom: go2_nav no esta corriendo")
+        return 1
+    print("ESCALA DE LA ODOMETRIA: pon al perro MIRANDO a una pared (lisa) a 1.5-3 m, con el camino libre.")
+    print("Avanza ~0.6 m derecho y para. Empieza en 3 s (Ctrl+C cancela)")
+    esperar(3.0)
+    d0, n0 = pared()
+    if d0 is None or d0 < 1.2:
+        print("no veo una pared delante entre 1.2 y 5 m (%s). Acomodalo y repite." %
+              ("nada" if d0 is None else "esta a %.2f m" % d0))
+        return 1
+    p0 = od["p"]
+    tw = Twist()
+    tw.linear.x = 0.25
+    t = time.monotonic()
+    while time.monotonic() - t < 2.6:
+        pub.publish(tw)
+        rclpy.spin_once(nodo, timeout_sec=0.05)
+        c, s_ = math.cos(p0[3]), math.sin(p0[3])
+        if c * (od["p"][0] - p0[0]) + s_ * (od["p"][1] - p0[1]) > d0 - 0.8:
+            break                                                    # nunca a menos de 0.8 m
+    esperar(1.5, Twist())
+    p1 = od["p"]
+    d1, n1 = pared()
+    if d1 is None:
+        print("despues de avanzar ya no veo la pared: repite mas lejos de ella")
+        return 1
+    c, s_ = math.cos(p0[3]), math.sin(p0[3])
+    d_odom = c * (p1[0] - p0[0]) + s_ * (p1[1] - p0[1])
+    d_lidar = d0 - d1
+    giro = math.degrees(math.atan2(math.sin(p1[3] - p0[3]), math.cos(p1[3] - p0[3])))
+    print("pared: %.3f m -> %.3f m  (%d y %d nubes)" % (d0, d1, n0, n1))
+    print("avance segun el LIDAR:      %.3f m" % d_lidar)
+    print("avance segun la ODOMETRIA:  %.3f m   (giro %.1f grados)" % (d_odom, giro))
+    if d_lidar < 0.2:
+        print("el perro casi no avanzo: corre 'go2 probar_mov'")
+        return 1
+    k = d_odom / d_lidar
+    print("ESCALA de la odometria: %.0f %%" % (100 * k))
+    if abs(k - 1) <= 0.06:
+        print("OK: la odometria mide bien (error < 6 %, del orden del ruido de esta medida). Si el mapa sale\n"
+              "mal, NO es la escala: mira 'go2 mapa3d' (si la alineacion 3D descarta nubes y por que).")
+    else:
+        print("!! la odometria se %s un %.0f %%. Repitelo 2 veces; si se mantiene, mandame este resultado."
+              % ("pasa" if k > 1 else "queda corta", abs(k - 1) * 100))
     return 0
 
 
@@ -705,6 +805,15 @@ def main():
         return 0
     if args[0] == "ver3d":
         return ver3d(args[1:])
+    if args[0] == "grabar":
+        # lo crudo del perro + lo del limpiador: con esto se puede rehacer y afinar el SLAM sin el perro
+        import os
+        d = os.path.expanduser("~/go2_bags/%s" % time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        print("grabando en %s  (Ctrl+C para terminar)" % d)
+        os.execvp("ros2", ["ros2", "bag", "record", "-o", d, "/utlidar/cloud", "/utlidar/cloud_deskewed",
+                           "/utlidar/robot_odom", "/utlidar/imu", "/odom", "/go2/nube_sin_fantasmas",
+                           "/go2/obstaculos", "/go2/suelo", "/go2/slam_estado", "/tf", "/tf_static"])
     rclpy.init()
     nodo = Node("go2_cli")
     try:
@@ -718,6 +827,8 @@ def main():
             return probar_mov(nodo)
         if args[0] == "manejar":
             return manejar(nodo)
+        if args[0] == "escala":
+            return escala(nodo)
         if args[0] == "calibrar_mov":
             return calibrar_mov(nodo)
         if args[0] == "altura":
