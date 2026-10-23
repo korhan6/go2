@@ -38,6 +38,9 @@ sudo apt-get install -y ros-$DISTRO-ros-base ros-$DISTRO-navigation2 ros-$DISTRO
   ros-$DISTRO-rmw-cyclonedds-cpp ros-$DISTRO-rosidl-generator-dds-idl ros-$DISTRO-rviz2 ros-$DISTRO-nav2-rviz-plugins ros-$DISTRO-joy \
   python3-colcon-common-extensions python3-numpy python3-scipy git
 
+# opcional: obstaculos en voxeles 3D que se olvidan solos (go2 lanzar obstaculos:=stvl)
+sudo apt-get install -y ros-$DISTRO-spatio-temporal-voxel-layer 2>/dev/null || echo "(STVL no disponible en apt: opcional)"
+
 echo "== Red: buffers grandes para las nubes del lidar"
 printf 'net.core.rmem_max=2147483647\nnet.core.rmem_default=8388608\nnet.ipv4.ipfrag_time=3\nnet.ipv4.ipfrag_high_thresh=134217728\n' | sudo tee /etc/sysctl.d/60-go2-dds.conf >/dev/null
 sudo sysctl -p /etc/sysctl.d/60-go2-dds.conf >/dev/null || true

@@ -87,6 +87,51 @@ def _slam_toolbox(context):
 AJUSTES = os.path.expanduser("~/.go2_nav/ajustes.yaml")
 
 
+def _controlador(context):
+    """controller_server. obstaculos:=stvl -> el costmap LOCAL usa Spatio-Temporal Voxel Layer
+    (voxeles 3D que se olvidan solos en 4 s: hecho para lidares ralos como el L1) en vez de la capa
+    2D. Si el paquete no esta instalado, avisa y usa la capa 2D."""
+    import yaml
+    share = get_package_share_directory("go2_nav")
+    nav2 = os.path.join(share, "config", "nav2.yaml")
+    extra = _ajustes()[0]
+    acc = []
+    if LaunchConfiguration("obstaculos").perform(context) == "stvl":
+        try:
+            get_package_share_directory("spatio_temporal_voxel_layer")
+            with open(nav2) as f:
+                d = yaml.safe_load(f)
+            lc = d["local_costmap"]["local_costmap"]["ros__parameters"]
+            lc["plugins"] = ["stvl_layer", "inflation_layer"]
+            lc["stvl_layer"] = {
+                "plugin": "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer",
+                "enabled": True, "voxel_decay": 4.0, "decay_model": 0, "voxel_size": 0.05,
+                "track_unknown_space": True, "mark_threshold": 0, "update_footprint_enabled": True,
+                "combination_method": 1, "origin_z": -1.0, "publish_voxel_map": True,
+                "transform_tolerance": 0.3, "mapping_mode": False, "map_save_duration": 60.0,
+                "observation_sources": "obstaculos",
+                "obstaculos": {"data_type": "PointCloud2", "topic": "/go2/obstaculos", "marking": True,
+                               "sensor_frame": "lidar",
+                               "clearing": True, "obstacle_range": 3.4, "min_obstacle_height": -1.0,
+                               "max_obstacle_height": 2.0, "expected_update_rate": 0.0,
+                               "observation_persistence": 0.0, "inf_is_valid": False, "filter": "voxel",
+                               "voxel_min_points": 0, "clear_after_reading": True, "model_type": 1,
+                               "vertical_fov_angle": 1.57, "vertical_fov_padding": 0.05,
+                               "horizontal_fov_angle": 6.28, "decay_acceleration": 5.0,
+                               "max_z": 2.0, "min_z": 0.1}}
+            nav2 = "/tmp/go2_nav2_stvl.yaml"
+            with open(nav2, "w") as f:
+                yaml.safe_dump(d, f)
+            acc.append(LogInfo(msg="go2_nav: obstaculos con STVL (voxeles 3D, se olvidan en 4 s)"))
+        except Exception as e:
+            acc.append(LogInfo(msg="!! STVL no disponible (%s): uso la capa 2D. Instalar: "
+                                   "sudo apt install ros-$ROS_DISTRO-spatio-temporal-voxel-layer" % e))
+    acc.append(Node(package="nav2_controller", executable="controller_server", output="screen",
+                    parameters=[nav2] + extra, remappings=[("cmd_vel", "cmd_vel_nav")],
+                    respawn=True, respawn_delay=2.0))
+    return acc
+
+
 def _nube(context):
     extra = _ajustes()[0]
     sim = LaunchConfiguration("sim").perform(context) == "true"
@@ -178,7 +223,8 @@ def generate_launch_description():
         DeclareLaunchArgument("vision", default_value="true"),
         DeclareLaunchArgument("camara", default_value="auto"),          # auto | multicast | videohub
         DeclareLaunchArgument("escaleras_vision", default_value=""),    # subida | requerida | off
-        DeclareLaunchArgument("nube", default_value="cruda"),           # cruda (go2_nube) | unitree (cloud_deskewed)
+        DeclareLaunchArgument("nube", default_value="cruda"),
+        DeclareLaunchArgument("obstaculos", default_value="2d"),        # 2d | stvl (voxeles 3D que se olvidan)           # cruda (go2_nube) | unitree (cloud_deskewed)
         DeclareLaunchArgument("slam", default_value="go2"),             # go2 (SLAM 3D) | toolbox (slam_toolbox 2D)
         DeclareLaunchArgument("mapa", default_value=""),                # NOMBRE = navegar en ~/.go2_nav/mapas/NOMBRE
         DeclareLaunchArgument("control", default_value="auto"),         # control PS4: auto (no en sim) | true | false
@@ -207,8 +253,7 @@ def generate_launch_description():
         # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE
         OpaqueFunction(function=_slam),
 
-        Node(package="nav2_controller", executable="controller_server", output="screen",
-             parameters=[nav2] + extra, remappings=remap_vel, respawn=True, respawn_delay=2.0),
+        OpaqueFunction(function=_controlador),
         Node(package="nav2_planner", executable="planner_server", name="planner_server", output="screen",
              parameters=[nav2] + extra, respawn=True, respawn_delay=2.0),
         Node(package="nav2_behaviors", executable="behavior_server", name="behavior_server", output="screen",

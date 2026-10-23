@@ -191,6 +191,22 @@ cuarto simulado con una odometría que deriva 1.5 m / 38° y una persona caminan
 Con un mapa guardado (`mapa:=casa`) arranca donde empezaste a mapear; si no, usa **2D Pose
 Estimate** en RViz.
 
+### Hitbox y navegacion (valores elegidos)
+| | valor | por que |
+|---|---|---|
+| huella | +0.40 / -0.37 m, +-0.17 m | el cuerpo del Go2 (0.70 x 0.31) con las patas al trotar |
+| margen del controlador | 6 cm | ruido del L1 (+-3) + error de posicion (+-3) + balanceo |
+| freno de emergencia | huella + 5 cm (stop) | para solo si algo queda a < 5 cm del cuerpo |
+| ir mas lento | 25 cm delante del hocico, al 40 % | el Go2 tarda ~0.3 s en responder: asi alcanza a parar a ~5 cm |
+| meta | 0.20 m | "go2 ir cocina" llega de verdad |
+| marcha atras | -0.1 m/s | el L1 casi no ve atras |
+| planificador | Smac 2D | rutas suaves, por el centro de los pasillos |
+| controlador | MPPI + Rotation Shim | el mas robusto de Nav2 |
+| obstaculos | capa 2D (o `obstaculos:=stvl`: voxeles 3D que se olvidan en 4 s) | |
+
+GPU (RTX): la vision (YOLO) ya corre en la GPU en FP16. `go2 vision_trt` la pasa a TensorRT
+(2-3 veces mas rapida). Nav2 (C++) y el SLAM (nubes chicas, KD-tree) van mas rapido en la CPU.
+
 ### Mapas: 2D limpio y 3D a color
 - **Mapa 2D** (`/map`): blanco = libre, negro = pared, gris = sin ver. Es el que usa
   Nav2 y el que se guarda como imagen (`~/.go2_nav/mapas/NOMBRE.pgm`).

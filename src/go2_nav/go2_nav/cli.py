@@ -22,6 +22,7 @@
   go2 subir | bajar     toma a mano la escalera que tiene delante (subir = de frente;
                         bajar = gira 180 y baja SIEMPRE en reversa)
   go2 probar_mov        mide si el perro HACE lo que se le pide (gira 3 s y avanza 2 s; 1 m libre delante)
+  go2 vision_trt        convierte YOLO a TensorRT FP16 (la RTX lo corre 2-3 veces mas rapido; una vez)
   go2 grabar            graba lo del lidar y la odometria (~/go2_bags/FECHA) para afinar el SLAM sin el perro
   go2 escala            mide si la odometria mide bien las distancias: frente a una pared avanza ~0.6 m y
                         compara la odometria con lo que se acerco la pared segun el lidar
@@ -994,6 +995,13 @@ def main():
         return 0
     if args[0] == "ver3d":
         return ver3d(args[1:])
+    if args[0] == "vision_trt":
+        import os
+        py = os.path.expanduser("~/.go2_nav/venv_vision/bin/python")
+        if not os.path.exists(py):
+            print("falta la vision (corre instalar.sh)")
+            return 1
+        os.execv(py, [py, "-m", "go2_nav.vision", "--trt"])
     if args[0] == "grabar":
         # lo crudo del perro + lo del limpiador: con esto se puede rehacer y afinar el SLAM sin el perro
         import os
