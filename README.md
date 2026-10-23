@@ -133,6 +133,18 @@ conectes). Con L1 suelto **no manda nada**: Nav2 y la exploración siguen solos.
 | L1 + OPTIONS | subir la escalera que tiene delante (de frente) |
 | L1 + PS (botón central) | bajar la escalera que tiene delante (gira 180° y baja en reversa) |
 | L1 + CUADRADO | guardar un punto aquí (`control_1`, `control_2`, ...: `go2 ir control_1`) |
+| L1 + CRUZ | **acostarse** (no se mueve con nada hasta L1 + TRIÁNGULO) |
+| L1 + SHARE | **bloquear / desbloquear** (de pie y trabado: ignora Nav2, teleop y los sticks) |
+
+### Acostar y bloquear
+```
+go2 acostar       # se echa (StandDown) y no se mueve con NADA hasta:
+go2 levantar
+go2 bloquear      # de pie con las juntas trabadas; ignora Nav2, 'go2 manejar' y el control PS4
+go2 desbloquear   # vuelve a equilibrar (BalanceStand + FreeWalk) y acepta órdenes
+```
+Las dos paran primero lo que estuviera haciendo (exploración, ruta, escalera). El control remoto
+**de Unitree** sigue funcionando siempre (es el firmware del perro, no go2_nav).
 
 - Mientras lo manejas, **frena solo** si hay algo a menos de 20 cm del cuerpo en esa dirección
   (igual que `go2 manejar`) y el control **tiene prioridad sobre Nav2**.
@@ -155,7 +167,24 @@ mitad a menos de 25 cm (el cuerpo), reloj del perro 3.5 s atrasado, y la IMU int
 **girada 122° en z** respecto a la nube: por eso go2_nav usa la odometría del propio perro
 (`/utlidar/robot_odom`) y no una odometría lidar-inercial con la IMU del L1.
 
+### Mapas: 2D limpio y 3D a color
+- **Mapa 2D** (slam_toolbox, `/map`): blanco = libre, negro = pared, gris = sin ver. Es el que usa
+  Nav2 y el que se guarda como imagen (`~/.go2_nav/mapas/NOMBRE.pgm`).
+- **Mapa 3D** (`/go2/mapa_3d`, nodo `go2_mapa3d`): todo lo que vio el lidar, en voxeles de 5 cm,
+  **color = altura** (suelo azul → paredes verde/amarillo → techo rojo). Un punto que aparece en
+  menos de 3 nubes (rebote, alguien que pasó) no queda. Se arma solo mientras el perro camina.
+  ```
+  go2 ver3d               # RViz en 3D (órbita: arrastra para girar, rueda = zoom)
+  go2 guardar_mapa casa   # guarda el 2D, los puntos Y el 3D (~/.go2_nav/mapas/casa.pcd)
+  go2 ver3d casa          # mira el 3D guardado, sin el perro
+  go2 mapa3d borrar       # empezarlo de cero
+  ```
+  El `.pcd` se abre también con CloudCompare, `pcl_viewer` u Open3D. Con `go2 lanzar mapa:=casa`
+  se carga y se sigue completando.
+
 ### Qué muestra RViz
+- Por defecto: **Mapa 2D** + **Mapa 3D** (vista desde arriba). La nube en vivo, los obstáculos
+  naranjas y el "Mapa explorado" del gestor vienen apagados: préndelos en la lista si los necesitas.
 - **El perro de verdad** (modelo 3D de Unitree) en vez de la caja: las patas se mueven con los
   ángulos reales de los motores. La caja (la huella de Nav2) y la zona de frenado siguen en la
   lista de RViz, apagadas: prende "Huella del perro" si quieres verla. (Mallas y medidas:

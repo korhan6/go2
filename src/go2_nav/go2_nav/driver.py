@@ -13,7 +13,8 @@ Este nodo:
   - recibe /cmd_vel (Nav2) y /cmd_vel_prioridad (calibracion, teleop) y manda Move a 20 Hz desde
     un timer propio. Si nadie manda nada por 0.4 s, el perro se detiene;
   - si alguien mueve los joysticks del control, suelta el mando (el control manda);
-  - servicios /go2/levantar y /go2/parar;
+  - servicios /go2/levantar, /go2/parar, /go2/acostar (StandDown), /go2/bloquear y /go2/desbloquear
+    (bloqueado = de pie con las juntas trabadas e IGNORA toda orden de movimiento: Nav2, teleop, control);
   - APAGA la evasion de obstaculos PROPIA de Unitree (la de la app): con ella prendida el perro
     frena solo cerca de las cosas y se queda pisando en el sitio ("temblando");
   - zona muerta: ordenes minusculas (que el perro no puede caminar) = quieto, no pisar en el sitio.
@@ -47,7 +48,8 @@ from . import ajustes
 
 API_MOVE = 1008
 API_STOPMOVE = 1003
-API_STANDUP = 1004
+API_STANDUP = 1004             # "lock stand": de pie con las juntas trabadas (no equilibra ni camina)
+API_STANDDOWN = 1005           # echarse en el piso
 API_BALANCESTAND = 1002
 API_FREEWALK = 2045
 API_BODYHEIGHT = 1013          # altura del cuerpo RELATIVA a la normal, {"data": m}, de -0.18 a +0.03
@@ -134,6 +136,12 @@ class Driver(Node):
                                      lambda m: setattr(self, "cm_accion", int(m.action_type)), 10)
         self.create_service(Trigger, "/go2/levantar", self.srv_levantar)
         self.create_service(Trigger, "/go2/parar", self.srv_parar)
+        self.create_service(Trigger, "/go2/acostar", self.srv_acostar)
+        self.create_service(Trigger, "/go2/bloquear", self.srv_bloquear)
+        self.create_service(Trigger, "/go2/desbloquear", self.srv_desbloquear)
+        self.create_service(Trigger, "/go2/bloquear_alternar", self.srv_alternar)
+        self.bloqueado = False       # no se mueve con NADA hasta 'go2 desbloquear'
+        self.acostado = False        # echado: no se mueve hasta 'go2 levantar'
 
         self.cmd = (0.0, 0.0, 0.0)
         self.t_cmd = 0.0
@@ -427,7 +435,7 @@ class Driver(Node):
             nav = True
         else:
             vx = vy = wz = 0.0
-        if self.remoto_activo():
+        if self.remoto_activo() or self.bloqueado or self.acostado:
             vx = vy = wz = 0.0
         if nav and self.lidar_mudo() and (vx or vy or wz):
             vx = vy = wz = 0.0              # quieto hasta que vuelvan las nubes
@@ -475,7 +483,8 @@ class Driver(Node):
              "orden": [round(v, 2) for v in self.ultima_orden], "ordenes_minimas": self.muertas,
              "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
-             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info}
+             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info,
+             "bloqueado": self.bloqueado, "acostado": self.acostado}
         self.n_odom = 0
         self.envios = 0
         self.muertas = 0
@@ -493,6 +502,7 @@ class Driver(Node):
             self._req(API_FREEWALK)
 
     def srv_levantar(self, req, res):
+        self.acostado = False
         if self.altura is not None and self.altura > 0.22:
             res.success, res.message = True, "ya estaba de pie (altura %.2f m)" % self.altura
             return res
@@ -508,6 +518,52 @@ class Driver(Node):
         self._req(API_STOPMOVE)
         res.success, res.message = True, "parado"
         return res
+
+    def _quieto_ya(self):
+        # corta la orden en curso y deja el lazo en silencio (Move(0) a un perro echado lo levanta)
+        self.cmd = self.cmd_prio = (0.0, 0.0, 0.0)
+        self.t_cmd = self.t_prio = 0.0
+        self.movia, self.ceros = False, 0
+        self._req(API_MOVE, {"x": 0.0, "y": 0.0, "z": 0.0})
+        self._req(API_STOPMOVE)
+
+    def srv_acostar(self, req, res):
+        self.acostado = True
+        self._quieto_ya()
+
+        def echar():
+            time.sleep(0.5)
+            self._req(API_STANDDOWN)
+        threading.Thread(target=echar, daemon=True).start()
+        self.get_logger().info("ACOSTADO: no se mueve hasta 'go2 levantar'")
+        res.success, res.message = True, "acostandose (para pararlo: go2 levantar)"
+        return res
+
+    def srv_bloquear(self, req, res):
+        self.bloqueado = True
+        self._quieto_ya()
+        if not self.acostado:
+            threading.Thread(target=lambda: (time.sleep(0.5), self._req(API_STANDUP)), daemon=True).start()
+        self.get_logger().warn("BLOQUEADO: ignoro Nav2, teleop y el control hasta 'go2 desbloquear'")
+        res.success, res.message = True, "bloqueado: quieto y trabado (go2 desbloquear para soltarlo)"
+        return res
+
+    def srv_desbloquear(self, req, res):
+        estaba = self.bloqueado
+        self.bloqueado = False
+        if estaba and not self.acostado:
+            def soltar():
+                self._req(API_BALANCESTAND)
+                time.sleep(1.0)
+                if self.marcha_libre:
+                    self._req(API_FREEWALK)
+            threading.Thread(target=soltar, daemon=True).start()
+        self.get_logger().info("desbloqueado")
+        res.success, res.message = True, "desbloqueado" if estaba else "no estaba bloqueado"
+        return res
+
+    def srv_alternar(self, req, res):
+        return self.srv_desbloquear(req, res) if self.bloqueado else self.srv_bloquear(req, res)
 
 
 def main():

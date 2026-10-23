@@ -33,10 +33,18 @@
     go2 lanzar mapa:=casa rviz:=true   3) otro dia: navegar en ese mapa (no lo cambia)
     go2 ir A | go2 casa | "2D Goal Pose" en RViz
   go2 mapas             mapas guardados
+  MAPA 3D (denso, a color por altura; se arma solo mientras el perro camina; 'guardar_mapa' lo guarda):
+    go2 ver3d             RViz en 3D (orbita) con el mapa 3D en vivo
+    go2 ver3d casa        mira ~/.go2_nav/mapas/casa.pcd (sin el perro)
+    go2 mapa3d [borrar]   cuantos puntos tiene / empezarlo de cero
+    go2 mapa3d guardar X  guarda solo el 3D en ~/.go2_nav/mapas/X.pcd (CloudCompare / pcl_viewer lo abren)
   go2 altura [cm]       sube/baja el cuerpo (de -18 a +3 cm; 0 = normal) y dice si el perro lo acepta.
                         En la escalera se sube solo (altura_escaleras del driver, +3 cm)
   go2 calibrar          gira 2 vueltas y aprende los puntos fantasma del propio perro
-  go2 levantar          pone al perro de pie
+  go2 levantar          pone al perro de pie (tambien despues de 'acostar')
+  go2 acostar           se echa en el piso y NO se mueve hasta 'go2 levantar'
+  go2 bloquear          queda de pie TRABADO e ignora todo (Nav2, teleop, control PS4) hasta...
+  go2 desbloquear       ...esto: vuelve a equilibrar y acepta ordenes
   go2 log               ultimos mensajes
   go2 control           asistente del control PS4: aprieta cada boton y mueve cada stick; guarda TU
                         orden en ~/.go2_nav/ps4.yaml. Con el control: L1 + sticks = manejar,
@@ -652,11 +660,48 @@ def diagnostico(nodo):
     return 0
 
 
+def ver3d(args):
+    """RViz en 3D. Con NOMBRE: publica ~/.go2_nav/mapas/NOMBRE.pcd (no hace falta el perro)."""
+    import os
+    import subprocess
+    from ament_index_python.packages import get_package_share_directory
+    cfg = os.path.join(get_package_share_directory("go2_nav"), "rviz", "mapa3d.rviz")
+    if not args:
+        os.execvp("rviz2", ["rviz2", "-d", cfg])
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from sensor_msgs.msg import PointCloud2
+    from .mapa3d import nube_color
+    from .nucleo.mapa3d import colores, leer_pcd
+    ruta = args[0] if args[0].endswith(".pcd") else os.path.expanduser("~/.go2_nav/mapas/%s.pcd" % args[0])
+    try:
+        xyz = leer_pcd(ruta)
+    except (OSError, ValueError, KeyError) as e:
+        print("no puedo leer %s: %s" % (ruta, e))
+        return 1
+    print("%s: %d puntos. Cierra RViz para terminar." % (ruta, len(xyz)))
+    rclpy.init()
+    nodo = Node("go2_ver3d")
+    q = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+    pub = nodo.create_publisher(PointCloud2, "/go2/mapa_3d", q)
+    pub.publish(nube_color(xyz, colores(xyz[:, 2]), nodo.get_clock().now().to_msg()))
+    rv = subprocess.Popen(["rviz2", "-d", cfg])
+    try:
+        while rv.poll() is None:
+            rclpy.spin_once(nodo, timeout_sec=0.5)
+    except KeyboardInterrupt:
+        rv.terminate()
+    nodo.destroy_node()
+    rclpy.try_shutdown()
+    return 0
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "ayuda"):
         print(__doc__)
         return 0
+    if args[0] == "ver3d":
+        return ver3d(args[1:])
     rclpy.init()
     nodo = Node("go2_cli")
     try:

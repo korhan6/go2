@@ -168,6 +168,9 @@ def generate_launch_description():
              parameters=[{"robot_description": urdf}]),
         Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="screen", parameters=extra),
         Node(package="go2_nav", executable="escaleras", name="go2_escaleras", output="screen", parameters=extra),
+        # mapa 3D denso a color (voxeles 5 cm, color = altura): /go2/mapa_3d; con mapa:=NOMBRE carga NOMBRE.pcd
+        Node(package="go2_nav", executable="mapa3d", name="go2_mapa3d", output="screen",
+             parameters=[{"mapa": LaunchConfiguration("mapa")}] + extra),
         # launch oficial de slam_toolbox (en Jazzy es un nodo lifecycle: su launch lo activa solo):
         # mapeando, o ubicandose en un mapa guardado con mapa:=NOMBRE
         OpaqueFunction(function=_slam),

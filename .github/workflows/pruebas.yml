@@ -19,5 +19,7 @@ jobs:
         run: ruff check --select F,E9 .
       - name: control PS4
         run: python3 pruebas/prueba_mando.py
+      - name: Mapa 3D (sin ROS)
+        run: python3 pruebas/prueba_mapa3d.py
       - name: nucleo (escaleras, exploracion, limpiador)
         run: python3 pruebas/prueba_nucleo.py

@@ -1,0 +1,65 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 70; 70; 76
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Mapa 3D (color = altura)
+      Enabled: true
+      Topic:
+        Value: /go2/mapa_3d
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 3
+      Alpha: 1
+      Color Transformer: RGB8
+      Use Fixed Frame: true
+    - Class: rviz_default_plugins/Map
+      Name: Mapa 2D (SLAM)
+      Enabled: false
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Color Scheme: map
+      Alpha: 0.6
+    - Class: rviz_default_plugins/RobotModel
+      Name: Perro
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Visual Enabled: true
+      Collision Enabled: false
+      Alpha: 1
+  Global Options:
+    Fixed Frame: map
+    Background Color: 12; 12; 16
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbita
+      Distance: 14
+      Pitch: 0.75
+      Yaw: 0.8
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+Window Geometry:
+  Width: 1400
+  Height: 900

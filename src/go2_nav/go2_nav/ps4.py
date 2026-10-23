@@ -48,7 +48,8 @@ class Ps4(Node):
         self.cli_levantar = self.create_client(Trigger, "/go2/levantar")
         self.create_timer(0.05, self.lazo)               # 20 Hz: el driver da 0.4 s de vigencia
         self.create_timer(5.0, self.revisar)
-        self.get_logger().info("control PS4 listo: L1 + sticks = manejar | CIRCULO = parar | L1+PS = bajar escalera")
+        self.get_logger().info("control PS4 listo: L1 + sticks = manejar | CIRCULO = parar | L1+PS = bajar escalera | "
+                               "L1+CRUZ = acostar | L1+TRIANGULO = levantar | L1+SHARE = bloquear/desbloquear")
 
     def cb_holg(self, m):
         try:
@@ -113,7 +114,7 @@ class Ps4(Node):
         elif a == "levantar":
             if self.cli_levantar.service_is_ready():
                 self.cli_levantar.call_async(Trigger.Request())
-        elif a in ("subir", "bajar"):
+        elif a in ("subir", "bajar", "acostar", "bloqueo"):
             self.comando(a)
         elif a == "guardar":
             self.guardar_siguiente()

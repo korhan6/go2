@@ -59,6 +59,16 @@ def main():
         assert a == ["subir"], (lay, a)
         _, a = m.paso(*joy(lay, nb, ("l1", "triangulo")))
         assert a == ["levantar"], (lay, a)
+        _, a = m.paso(*joy(lay, nb, ("l1", "cruz")))
+        assert a == ["acostar"], (lay, a)
+        _, a = m.paso(*joy(lay, nb, ("l1", "share")))
+        assert a == ["bloqueo"], (lay, a)
+        m.paso(*joy(lay, nb))
+        _, a = m.paso(*joy(lay, nb, ("share",)))
+        assert a == ["pausa_seguir"], (lay, a)
+        _, a = m.paso(*joy(lay, nb, ("cruz",)))
+        assert a == [], "CRUZ sin L1 no acuesta"
+        m.paso(*joy(lay, nb))
         # 7) frena como 'go2 manejar': algo delante a menos de FRENO -> no avanza, pero gira
         o, _ = m.paso(*joy(lay, nb, ("l1",), {"vx": 1.0, "wz": 1.0}), holguras={"adelante": FRENO - 0.05})
         assert o[0] == 0.0 and o[2] > 0.5 and m.aviso, (lay, o)

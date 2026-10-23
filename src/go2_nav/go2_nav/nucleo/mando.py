@@ -4,6 +4,8 @@
     R1 (con L1)               rapido                 soltar L1                 el perro se para
     CIRCULO                   PARAR TODO (exploracion, ruta, escalera)  -- funciona SIN L1
     SHARE                     pausa / seguir (exploracion o ruta)
+    L1 + CRUZ                 ACOSTARSE (no se mueve hasta L1 + TRIANGULO)
+    L1 + SHARE                BLOQUEAR / desbloquear (trabado de pie: ignora Nav2, teleop y el control)
     L1 + TRIANGULO            levantarse             L1 + OPTIONS              subir la escalera de delante
     L1 + PS (boton central)   bajar la escalera de delante (gira 180 y baja en reversa)
     L1 + CUADRADO             guardar un punto aqui (control_1, control_2, ...)
@@ -50,7 +52,7 @@ class Mando(object):
     """Traduce cada mensaje del control en (orden de velocidad | None, [acciones]).
 
     orden None = no mandar nada (Nav2/gestor mandan). Al soltar L1 se manda UNA orden cero.
-    acciones: 'parar', 'pausa_seguir', 'levantar', 'subir', 'bajar', 'guardar'.
+    acciones: 'parar', 'pausa_seguir', 'levantar', 'subir', 'bajar', 'guardar', 'acostar', 'bloqueo'.
     """
 
     def __init__(self, layout=None, signos=None, v_normal=(0.40, 0.25, 0.8), v_rapido=(0.60, 0.35, 1.1)):
@@ -84,10 +86,10 @@ class Mando(object):
         if self._apreto(botones, "circulo"):
             acciones.append("parar")                    # siempre, sin hombre muerto
         if self._apreto(botones, "share"):
-            acciones.append("pausa_seguir")
+            acciones.append("bloqueo" if l1 else "pausa_seguir")
         if l1:
             for boton, accion in (("triangulo", "levantar"), ("options", "subir"), ("ps", "bajar"),
-                                  ("cuadrado", "guardar")):
+                                  ("cuadrado", "guardar"), ("cruz", "acostar")):
                 if self._apreto(botones, boton):
                     acciones.append(accion)
         self.antes = list(botones)

@@ -14,17 +14,29 @@ Visualization Manager:
       Plane Cell Count: 30
       Color: 160; 160; 164
     - Class: rviz_default_plugins/Map
-      Name: Mapa (SLAM, crudo - apagado)
-      Enabled: false
+      Name: Mapa 2D (SLAM - blanco libre, negro pared)
+      Enabled: true
       Topic:
         Value: /map
         Durability Policy: Transient Local
         Reliability Policy: Reliable
       Color Scheme: map
-      Alpha: 0.9
+      Alpha: 1
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Mapa 3D (color = altura)
+      Enabled: true
+      Topic:
+        Value: /go2/mapa_3d
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Style: Flat Squares
+      Size (m): 0.05
+      Alpha: 1
+      Color Transformer: RGB8
+      Use Fixed Frame: true
     - Class: rviz_default_plugins/Map
       Name: Mapa explorado (gris = sin ver, morado = obstaculo)
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /go2/mapa_explorado
         Durability Policy: Transient Local
@@ -52,7 +64,7 @@ Visualization Manager:
       Alpha: 0.4
     - Class: rviz_default_plugins/PointCloud2
       Name: Nube del lidar (color = altura)
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /go2/nube_sin_fantasmas
         Reliability Policy: Best Effort
@@ -65,7 +77,7 @@ Visualization Manager:
       Autocompute Value Bounds: true
     - Class: rviz_default_plugins/PointCloud2
       Name: Obstaculos (lo UNICO que usa Nav2)
-      Enabled: true
+      Enabled: false
       Topic:
         Value: /go2/obstaculos
         Reliability Policy: Best Effort

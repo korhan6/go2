@@ -144,6 +144,9 @@ class Gestor(Node):
         self.cli_levantar = self.create_client(Trigger, "/go2/levantar", callback_group=cb)
         self.cli_parar = self.create_client(Trigger, "/go2/parar", callback_group=cb)
         self.cli_esc = self.create_client(Comando, "/go2/escalera", callback_group=cb)
+        self.cli_mapa3d = self.create_client(Comando, "/go2/mapa3d", callback_group=cb)
+        self.cli_postura = {n: self.create_client(Trigger, "/go2/" + n, callback_group=cb)
+                            for n in ("acostar", "bloquear", "desbloquear", "bloquear_alternar")}
         self.cli_limpiar = [self.create_client(ClearEntireCostmap, s, callback_group=cb) for s in
                             ("/global_costmap/clear_entirely_global_costmap",
                              "/local_costmap/clear_entirely_local_costmap")]
@@ -1164,6 +1167,27 @@ class Gestor(Node):
         if o == "levantar":
             self.cli_levantar.call_async(Trigger.Request())
             return True, "levantando", {}
+        if o == "mapa3d":
+            req = Comando.Request()
+            req.orden = a[0] if a else "estado"
+            if req.orden == "guardar" and len(a) > 1:
+                nombre = "".join(c for c in a[1] if c.isalnum() or c in "-_") or "mapa3d"
+                req.args = [os.path.join(DATOS, "mapas", nombre + ".pcd")]
+            r = self._llamar(self.cli_mapa3d, req, 10.0)
+            if r is None:
+                return False, "go2_mapa3d no responde", {}
+            return r.ok, r.mensaje, {}
+        if o == "bloqueo":                      # control PS4 (L1+SHARE): bloquea o desbloquea
+            o = "bloquear_alternar"
+        if o in ("acostar", "bloquear", "desbloquear", "bloquear_alternar"):
+            if o != "desbloquear":
+                # que nada (exploracion, ruta, escalera) le siga mandando moverse
+                self.ordenar("parar", [])
+                self.modo, self.motivo = "quieto", ("acostado" if o == "acostar" else "bloqueado / parado")
+            r = self._llamar(self.cli_postura[o], Trigger.Request(), 3.0)
+            if r is None:
+                return False, "el driver no responde (/go2/%s)" % o, {}
+            return r.success, r.message, {}
         if o == "estado":
             return True, "", self.estado()
         if o == "volcar":
@@ -1197,11 +1221,16 @@ class Gestor(Node):
         img.name.data = base
         self._llamar(self.cli_guardar_img, img, 10.0)          # imagen .pgm/.yaml para verlo (opcional)
         self.mapa_sesion = nombre
+        m3 = Comando.Request()
+        m3.orden, m3.args = "guardar", [base + ".pcd"]
+        r3 = self._llamar(self.cli_mapa3d, m3, 10.0)
+        nube3d = r3.mensaje if r3 is not None else "mapa 3D no guardado (go2_mapa3d no responde)"
         self._guardar_puntos()                                  # y los puntos que guardes despues, tambien
         self.log("mapa '%s' guardado (%s), con %d puntos" % (nombre, base, len(self.puntos)))
-        return True, ("mapa '%s' guardado con %d puntos (%s).\nPara navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
+        return True, ("mapa '%s' guardado con %d puntos (%s).\n" % (nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno")
+                      + nube3d + "\n" + ("Para navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
                       "(pon al perro donde EMPEZASTE a mapear, o marca donde esta con '2D Pose Estimate' en RViz)"
-                      % (nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno", nombre)), {}
+                      % nombre)), {}
 
     def _orden_explorar(self, pose, a):
         if self.mapa_fijo:
