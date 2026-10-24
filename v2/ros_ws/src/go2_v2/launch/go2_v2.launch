@@ -1,0 +1,77 @@
+<launch>
+  <!-- Go2 v2 = stack de CMU (autonomy_stack_go2) + go2_v2. Igual que system_real_robot[_with_route_planner]
+       de CMU, con dos cambios: los sensores los transforma go2_sensores (vectorizado, sin la demora de
+       1 s de la version Python de CMU) y al perro le habla SOLO go2_guardian (watchdog, acostar,
+       bloquear, pausa); el pathFollower de CMU va con is_real_robot=false (publica /cmd_vel). -->
+
+  <arg name="ruta" default="true"/>              <!-- true: FAR planner (rutas largas, mapa de visibilidad) -->
+  <arg name="rviz" default="true"/>
+  <arg name="maxSpeed" default="1.0"/>           <!-- m/s, el tope del planificador local -->
+  <arg name="autonomySpeed" default="1.0"/>      <!-- m/s navegando sola -->
+  <arg name="sensorOffsetX" default="0.3"/>
+  <arg name="sensorOffsetY" default="0.0"/>
+  <arg name="cameraOffsetZ" default="0.0"/>
+  <arg name="checkTerrainConn" default="true"/>
+  <arg name="joystick" default="true"/>
+
+  <node pkg="joy" exec="joy_node" name="ps3_joy" output="screen" if="$(var joystick)">
+    <param name="dev" value="/dev/input/js0" />
+    <param name="device_id" value="0" />
+    <param name="deadzone" value="0.12" />
+    <param name="autorepeat_rate" value="0.0" />
+  </node>
+
+  <!-- sensores del L1 -> marco 'body' (reemplaza transform_everything.py de CMU) -->
+  <node pkg="go2_v2" exec="sensores" name="go2_sensores" output="screen" respawn="true" respawn_delay="1.0"/>
+
+  <!-- SLAM: Point-LIO con la IMU del L1 (mismos parametros que mapping_utlidar.launch de CMU) -->
+  <node pkg="point_lio_unilidar" exec="pointlio_mapping" name="laserMapping" output="screen">
+    <param from="$(find-pkg-share point_lio_unilidar)/config/utlidar.yaml" />
+    <param name="use_imu_as_input" value="false"/>
+    <param name="prop_at_freq_of_imu" value="true"/>
+    <param name="check_satu" value="true"/>
+    <param name="init_map_size" value="10"/>
+    <param name="point_filter_num" value="1"/>
+    <param name="space_down_sample" value="true" />
+    <param name="filter_size_surf" value="0.1" />
+    <param name="filter_size_map" value="0.1" />
+    <param name="cube_side_length" value="1000.0" />
+    <param name="runtime_pos_log_enable" value="false" />
+    <remap from="/cloud_registered" to="/registered_scan" />
+    <remap from="/aft_mapped_to_init" to="/state_estimation" />
+  </node>
+
+  <!-- planificador local (biblioteca de trayectorias, ~100 Hz) + seguidor de ruta -->
+  <include file="$(find-pkg-share local_planner)/launch/local_planner.launch" >
+    <arg name="sensorOffsetX" value="$(var sensorOffsetX)" />
+    <arg name="sensorOffsetY" value="$(var sensorOffsetY)" />
+    <arg name="cameraOffsetZ" value="$(var cameraOffsetZ)"/>
+    <arg name="maxSpeed" value="$(var maxSpeed)"/>
+    <arg name="autonomySpeed" value="$(var autonomySpeed)"/>
+    <arg name="is_real_robot" value="false"/>
+  </include>
+
+  <include file="$(find-pkg-share terrain_analysis)/launch/terrain_analysis.launch" />
+
+  <group if="$(var ruta)">
+    <include file="$(find-pkg-share terrain_analysis_ext)/launch/terrain_analysis_ext.launch" >
+      <arg name="checkTerrainConn" value="$(var checkTerrainConn)"/>
+    </include>
+    <!-- trae su propio RViz (con el boton Goalpoint) -->
+    <include file="$(find-pkg-share far_planner)/launch/far_planner.launch" />
+  </group>
+
+  <group unless="$(var ruta)">
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="rvizGA" if="$(var rviz)"
+          args="-d $(find-pkg-share vehicle_simulator)/rviz/vehicle_simulator.rviz"/>
+  </group>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubVehicle" args="0 0 0 0 0 0 /aft_mapped /sensor"/>
+
+  <!-- el UNICO que le habla al perro -->
+  <node pkg="go2_v2" exec="guardian" name="go2_guardian" output="screen" respawn="true" respawn_delay="1.0">
+    <param from="$(find-pkg-share go2_v2)/config/guardian.yaml" />
+  </node>
+
+</launch>
