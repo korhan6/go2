@@ -32,6 +32,7 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
     go2v2 parar                 corta la navegacion (queda quieto)
     go2v2 pausa                 freno de emergencia (otra vez para seguir) = CIRCULO del PS4
     go2v2 acostar | levantar | bloquear | desbloquear
+    go2v2 recuperar             se cayo o quedo raro: RecoveryStand
     go2v2 estado                sensores, guardian, pose, demora
     go2v2 log                   ultimos mensajes
     go2v2 grabar [s]            graba /utlidar/cloud + /utlidar/imu (para revisar sin el perro)
@@ -42,8 +43,10 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
     stick derecho               manejar: el perro sigue la direccion y ESQUIVA solo
     L2 sostenido                modo autonomo (sigue la meta)      R2 sostenido: manual SIN evasion
     R1                          borrar el mapa de terreno (si quedo basura)
-    CIRCULO                     pausa / freno de emergencia
-    L1 + CRUZ  acostar          L1 + TRIANGULO  levantar          L1 + SHARE  bloquear/desbloquear
+    L1                          borrar el grafo de rutas de FAR (empieza de cero)
+    CIRCULO                     pausa / freno de emergencia (otra vez para seguir)
+    SHARE + CRUZ  acostar       SHARE + TRIANGULO  levantar
+    SHARE + CUADRADO  bloquear/desbloquear      SHARE + CIRCULO  recuperar (RecoveryStand)
 TXT
 }
 
@@ -89,6 +92,7 @@ args_docker() {
            -e GO2_IF="$(interfaz_perro)" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
            -v /tmp/.X11-unix:/tmp/.X11-unix
            -v /dev/input:/dev/input
+           -v /run/udev:/run/udev:ro
            -v "$DATOS":/root/.go2_v2
            -v "$DATOS/Desktop":/root/Desktop
            -v "$AQUI/ros_ws/src/go2_v2":/ws/src/go2_v2)
@@ -173,7 +177,7 @@ case "$cmd" in
   ir|guardar|puntos|borrar|parar|estado)
     exec_en_docker ros2 run go2_v2 herramientas "$cmd" "$@"
     ;;
-  acostar|levantar|bloquear|desbloquear|pausa)
+  acostar|levantar|bloquear|desbloquear|pausa|recuperar)
     servicio "$cmd"
     ;;
   log)

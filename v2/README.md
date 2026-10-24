@@ -23,12 +23,18 @@ a arrancar si ve la v1 corriendo.
   por número contra la original en `pruebas/prueba_transformacion.py`), pero vectorizada. Tarda
   ~1–2 ms por nube; la original iba punto por punto en Python y es la "demora de más de 1 s" que
   CMU reporta en laptops. Además, la IMU no arranca hasta conocer el desfase de relojes.
-- **go2_guardian**: es el único nodo que le habla al perro. Hace cuatro cosas:
+- **go2_guardian**: es el único nodo que le habla al perro. Hace esto:
   - Pone límites duros de velocidad.
   - Tiene un watchdog: si el planificador se cae, StopMove en 0.25 s.
-  - Maneja los estados acostar, levantar, bloquear y pausa, desde el PS4 o por comando.
+  - **Frena si Point-LIO o el mapa de terreno dejan de llegar.** El seguidor de CMU sigue mandando
+    la última velocidad aunque Point-LIO se caiga, y el perro caminaría a ciegas.
+  - No camina mientras se está parando o echando.
+  - Maneja los estados acostar, levantar, bloquear, pausa y recuperar, desde el PS4 o por comando.
   - Apaga la evasión de obstáculos de Unitree, que frenaba al perro.
+  - Manda un StopMove final al cerrarse con Ctrl+C.
 - **Comandos** `go2v2 ir / guardar / puntos / parar / estado`.
+- **Pruebas sin ROS** en `pruebas/`: la matemática contra la original de CMU, la lógica del
+  guardián, y los tres nodos corriendo con un ROS simulado.
 
 ## Instalar (una vez)
 
@@ -67,16 +73,24 @@ go2v2 estado               # demora, Hz, pose, estado del guardián
 | L2 sostenido | Modo autónomo (sigue la meta) |
 | R2 sostenido | Manual **sin** evasión |
 | R1 | Borra el mapa de terreno |
+| L1 | Borra el grafo de rutas de FAR (lo de CMU) |
 | CÍRCULO | Pausa |
-| L1 + CRUZ | Acostar |
-| L1 + TRIÁNGULO | Levantar |
-| L1 + SHARE | Bloquear / desbloquear |
+| SHARE + CRUZ | Acostar |
+| SHARE + TRIÁNGULO | Levantar |
+| SHARE + CUADRADO | Bloquear / desbloquear |
+| SHARE + CÍRCULO | Recuperar (RecoveryStand: se cayó o quedó raro) |
+
+Las combinaciones van con SHARE porque CMU ya usa L1 y R1.
 
 ## Si algo no anda
 
 - **`go2v2 estado`**:
   - `demora_ms` debería ser < 150. Si es mucho mayor, se están perdiendo nubes: corre `go2v2 red`.
   - Si `pose` dice que no llega, Point-LIO no arrancó: revisa que haya nube (`nubes` > 0) y IMU.
+  - `parado_por` del guardián dice por qué no camina, por ejemplo "la odometría tiene 1.2 s de
+    atraso" o "no llega el mapa de terreno".
+- **"el reloj del perro SALTÓ"**: el perro se reinició con la v2 andando. Relánzala con
+  `go2v2 detener` y después `go2v2 lanzar`.
 - **El perro se va torcido o el mapa se dobla**: recalibra la IMU (`go2v2 calibrar`) y espera
   10–20 s quieto al arrancar (CMU avisa que al inicio puede haber demora).
 - **Obstáculos bajos**: el L1 es ruidoso y CMU no ve lo que mide menos de ~30 cm. Para cosas más

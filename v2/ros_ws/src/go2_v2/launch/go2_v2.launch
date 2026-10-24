@@ -57,8 +57,19 @@
     <include file="$(find-pkg-share terrain_analysis_ext)/launch/terrain_analysis_ext.launch" >
       <arg name="checkTerrainConn" value="$(var checkTerrainConn)"/>
     </include>
-    <!-- trae su propio RViz (con el boton Goalpoint) -->
-    <include file="$(find-pkg-share far_planner)/launch/far_planner.launch" />
+    <!-- FAR planner (lo mismo que far_planner.launch de CMU, pero con RViz opcional) -->
+    <node pkg="far_planner" exec="far_planner" name="far_planner" output="screen" respawn="true" respawn_delay="2.0">
+      <param from="$(find-pkg-share far_planner)/config/default.yaml" />
+      <param name="use_sim_time" value="false" />
+      <remap from="/odom_world" to="/state_estimation" />
+      <remap from="/terrain_cloud" to="/terrain_map_ext" />
+      <remap from="/scan_cloud" to="/terrain_map" />
+      <remap from="/terrain_local_cloud" to="/registered_scan" />
+    </node>
+    <include file="$(find-pkg-share graph_decoder)/launch/decoder.launch" />
+    <!-- RViz de FAR: botones Goalpoint, Reset Visibility Graph, etc. -->
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="far_rviz" if="$(var rviz)"
+          args="-d $(find-pkg-share far_planner)/rviz/default.rviz" />
   </group>
 
   <group unless="$(var ruta)">
