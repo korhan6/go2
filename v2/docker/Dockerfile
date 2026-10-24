@@ -80,7 +80,8 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /root/Desktop /root/.go2_v2
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
     ROS_DOMAIN_ID=0 \
-    SDL_JOYSTICK_DISABLE_UDEV=1
+    SDL_JOYSTICK_DISABLE_UDEV=1 \
+    PYTHONDONTWRITEBYTECODE=1
 WORKDIR /ws
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]

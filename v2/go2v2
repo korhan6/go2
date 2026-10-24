@@ -95,7 +95,7 @@ chequear_perro() {
 args_docker() {
   local a=(--net=host --ipc=host --privileged
            -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1
-           -e GO2_IF="$(interfaz_perro)" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+           -e GO2_IF="$(interfaz_perro)" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e PYTHONDONTWRITEBYTECODE=1
            -v /tmp/.X11-unix:/tmp/.X11-unix
            -v /dev/input:/dev/input
            -v /run/udev:/run/udev:ro
@@ -133,6 +133,11 @@ shift || true
 case "$cmd" in
   instalar)
     chequear_docker
+    # restos de versiones viejas: caches de Python creados por el Docker (de root) en tu carpeta
+    if find "$AQUI/ros_ws" -name __pycache__ -user root 2>/dev/null | grep -q .; then
+      amarillo "borrando caches de Python que dejo el Docker (pide sudo una vez)"
+      find "$AQUI/ros_ws" -name __pycache__ -user root -exec sudo rm -rf {} + 2>/dev/null
+    fi
     verde "construyendo la imagen '$IMAGEN' (la primera vez tarda: compila el stack de CMU)..."
     docker build -t "$IMAGEN" -f "$AQUI/docker/Dockerfile" "$AQUI" || { rojo "fallo la construccion (mandame las ultimas lineas)"; exit 1; }
     mkdir -p "$HOME/.local/bin"
