@@ -82,6 +82,28 @@ go2v2 estado               # demora, Hz, pose, estado del guardián
 
 Las combinaciones van con SHARE porque CMU ya usa L1 y R1.
 
+## Simulador (sin el perro)
+
+Usa el entorno 3D de CMU (Unity) con un robot simulado. Corre la misma navegación y el mismo
+guardián, y queda aislado del perro: usa otro dominio DDS, el 42.
+
+1. Baja el entorno de Unity de CMU: [carpeta de CMU en Google Drive](https://drive.google.com/drive/folders/1CeAA5aeXCk8Sh3ZuJR7UME6sQZFuaorf).
+2. Descomprímelo para que quede `~/.go2_v2/unity/environment/Model.x86_64`, con `map.ply` y el
+   resto al lado.
+3. Lánzalo:
+   ```bash
+   go2v2 sim                  # o: go2v2 sim ruta:=false velocidad:=0.8
+   ```
+
+Desde otra terminal funcionan `go2v2 ir / guardar / parar / pausa / estado`. El PS4 y los botones
+de RViz también.
+
+| Se prueba en el simulador | No se prueba (necesita el perro) |
+|---|---|
+| Evasión de obstáculos, rutas con FAR, modos del PS4 | Point-LIO y la nube real del L1 |
+| `go2v2 ir / guardar / puntos / parar / estado` | go2_sensores y la calibración de la IMU |
+| Guardián: pausa, acostar y bloquear frenan al robot simulado | Las posturas reales (echarse, pararse) |
+
 ## Si algo no anda
 
 - **`go2v2 estado`**:

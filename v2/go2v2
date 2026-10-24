@@ -37,6 +37,11 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
     go2v2 log                   ultimos mensajes
     go2v2 grabar [s]            graba /utlidar/cloud + /utlidar/imu (para revisar sin el perro)
     go2v2 detener               apaga todo
+
+  SIMULADOR (sin perro: el entorno 3D de CMU)
+    go2v2 sim                   lo mismo que 'lanzar' pero con un perro simulado en Unity
+        ruta:=false  velocidad:=0.8  rviz:=false
+                                (con la v2 en sim, ir/guardar/parar/pausa/estado funcionan igual)
     go2v2 shell                 una terminal dentro del Docker
 
   CONTROL PS4 (por Bluetooth o USB)
@@ -173,6 +178,34 @@ case "$cmd" in
     verde "lanzando la v2 (Ctrl+C para apagar)..."
     mapfile -t A < <(args_docker)
     docker run --rm -it --name "$NOMBRE" "${A[@]}" "$IMAGEN" ros2 launch go2_v2 go2_v2.launch "${L[@]}"
+    ;;
+  sim)
+    chequear_docker
+    if corriendo; then rojo "ya hay una v2 corriendo (go2v2 detener)"; exit 1; fi
+    UNITY="$DATOS/unity"
+    if [ ! -f "$UNITY/environment/Model.x86_64" ]; then
+      rojo "falta el entorno de Unity de CMU en $UNITY"
+      echo "  1) bajalo (carpeta 'unity' o el zip del entorno) de:"
+      echo "     https://drive.google.com/drive/folders/1CeAA5aeXCk8Sh3ZuJR7UME6sQZFuaorf"
+      echo "  2) descomprimelo para que quede:  $UNITY/environment/Model.x86_64"
+      echo "     (y al lado: $UNITY/map.ply, $UNITY/environment/Model_Data/ ...)"
+      exit 1
+    fi
+    chmod +x "$UNITY/environment/Model.x86_64" 2>/dev/null
+    L=()
+    for a in "$@"; do
+      case "$a" in
+        velocidad:=*) v="${a#velocidad:=}"; L+=("maxSpeed:=$v" "autonomySpeed:=$v") ;;
+        *) L+=("$a") ;;
+      esac
+    done
+    command -v xhost >/dev/null && xhost +local:root >/dev/null 2>&1
+    verde "simulacion: Unity + la v2 (Ctrl+C para apagar). Aislada del perro (dominio DDS 42)."
+    mapfile -t A < <(args_docker)
+    docker run --rm -it --name "$NOMBRE" "${A[@]}" -e GO2V2_SIM=1 -e ROS_DOMAIN_ID=42 \
+      -v "$UNITY":/ws/src/base_autonomy/vehicle_simulator/mesh/unity \
+      "$IMAGEN" bash -c '/ws/src/base_autonomy/vehicle_simulator/mesh/unity/environment/Model.x86_64 \
+        > /tmp/unity.log 2>&1 & sleep 3; exec ros2 launch go2_v2 go2_v2_sim.launch "$@"' _ "${L[@]}"
     ;;
   ir|guardar|puntos|borrar|parar|estado)
     exec_en_docker ros2 run go2_v2 herramientas "$cmd" "$@"

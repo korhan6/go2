@@ -66,6 +66,12 @@ RUN source /opt/ros/humble/setup.bash && cd /ws \
          if [ ! -e /ws/install/$f ]; then echo "FALTA: $f"; tail -n 120 /tmp/build.log; exit 1; fi; \
        done
 
+# librerias que pide el simulador Unity de CMU ('go2v2 sim'). Va aca y no arriba para no
+# recompilar todo CMU en una imagen ya construida
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglu1-mesa libxcursor1 libxrandr2 libxinerama1 libxi6 libvulkan1 libgtk-3-0 mesa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY ros_ws/src/go2_v2 /ws/src/go2_v2
 RUN source /opt/ros/humble/setup.bash && source /ws/install/setup.bash && cd /ws \
     && colcon build --symlink-install --packages-select go2_v2

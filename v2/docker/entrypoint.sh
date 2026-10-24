@@ -5,6 +5,14 @@ source /ws/install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
 
+if [ -n "$GO2V2_SIM" ]; then
+  # simulacion: otro dominio DDS (42) -> nada de lo que corre aca le llega a un perro real
+  export ROS_DOMAIN_ID=42
+  unset CYCLONEDDS_URI
+  [ -n "$GO2V2_SILENCIO" ] || echo "go2v2: SIMULACION (dominio DDS 42, aislado del perro)"
+  exec "$@"
+fi
+
 # la interfaz del cable: la que tenga una IP 192.168.123.x (el perro es 192.168.123.161)
 if [ -z "$GO2_IF" ]; then
   GO2_IF=$(ip -o -4 addr show 2>/dev/null | awk '$4 ~ /^192\.168\.123\./ {print $2; exit}')
