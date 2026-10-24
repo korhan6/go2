@@ -39,6 +39,7 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
     go2v2 detener               apaga todo
 
   SIMULADOR (sin perro: el entorno 3D de CMU)
+    go2v2 sim-instalar ARCHIVO  instala el entorno de Unity bajado de CMU (.zip o .tar.gz)
     go2v2 sim                   lo mismo que 'lanzar' pero con un perro simulado en Unity
         ruta:=false  velocidad:=0.8  rviz:=false
                                 (con la v2 en sim, ir/guardar/parar/pausa/estado funcionan igual)
@@ -179,6 +180,31 @@ case "$cmd" in
     mapfile -t A < <(args_docker)
     docker run --rm -it --name "$NOMBRE" "${A[@]}" "$IMAGEN" ros2 launch go2_v2 go2_v2.launch "${L[@]}"
     ;;
+  sim-instalar)
+    f="${1:-}"
+    if [ -z "$f" ] || [ ! -f "$f" ]; then
+      rojo "uso: go2v2 sim-instalar ~/Downloads/ARCHIVO.zip   (el entorno de Unity bajado de la carpeta de CMU)"
+      exit 1
+    fi
+    tmp=$(mktemp -d)
+    echo "descomprimiendo $f ..."
+    case "$f" in
+      *.zip) unzip -q "$f" -d "$tmp" || { rojo "no pude descomprimir (sudo apt install unzip?)"; exit 1; } ;;
+      *.tar.gz|*.tgz|*.tar) tar xf "$f" -C "$tmp" || { rojo "no pude descomprimir"; exit 1; } ;;
+      *) rojo "formato no soportado: $f (zip o tar.gz)"; exit 1 ;;
+    esac
+    m=$(find "$tmp" -name Model.x86_64 -type f | head -n 1)
+    if [ -z "$m" ]; then
+      rojo "ese archivo no trae Model.x86_64: no es el entorno de Unity (o es el bag de ejemplo)"
+      rm -rf "$tmp"; exit 1
+    fi
+    raiz="$(dirname "$(dirname "$m")")"        # .../unity  (adentro: environment/Model.x86_64, map.ply)
+    if [ -d "$DATOS/unity" ]; then mv "$DATOS/unity" "$DATOS/unity.viejo.$(date +%s)"; fi
+    mv "$raiz" "$DATOS/unity"
+    rm -rf "$tmp"
+    chmod +x "$DATOS/unity/environment/Model.x86_64"
+    verde "entorno instalado en $DATOS/unity. Ahora: go2v2 sim"
+    ;;
   sim)
     chequear_docker
     if corriendo; then rojo "ya hay una v2 corriendo (go2v2 detener)"; exit 1; fi
@@ -187,8 +213,7 @@ case "$cmd" in
       rojo "falta el entorno de Unity de CMU en $UNITY"
       echo "  1) bajalo (carpeta 'unity' o el zip del entorno) de:"
       echo "     https://drive.google.com/drive/folders/1CeAA5aeXCk8Sh3ZuJR7UME6sQZFuaorf"
-      echo "  2) descomprimelo para que quede:  $UNITY/environment/Model.x86_64"
-      echo "     (y al lado: $UNITY/map.ply, $UNITY/environment/Model_Data/ ...)"
+      echo "  2) instalalo:  go2v2 sim-instalar ~/Downloads/ARCHIVO.zip"
       exit 1
     fi
     chmod +x "$UNITY/environment/Model.x86_64" 2>/dev/null
