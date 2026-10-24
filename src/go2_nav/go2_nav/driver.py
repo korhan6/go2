@@ -13,7 +13,8 @@ Este nodo:
   - recibe /cmd_vel (Nav2) y /cmd_vel_prioridad (calibracion, teleop) y manda Move a 20 Hz desde
     un timer propio. Si nadie manda nada por 0.4 s, el perro se detiene;
   - si alguien mueve los joysticks del control, suelta el mando (el control manda);
-  - servicios /go2/levantar y /go2/parar;
+  - servicios /go2/levantar, /go2/parar, /go2/acostar (StandDown), /go2/bloquear y /go2/desbloquear
+    (bloqueado = de pie con las juntas trabadas e IGNORA toda orden de movimiento: Nav2, teleop, control);
   - APAGA la evasion de obstaculos PROPIA de Unitree (la de la app): con ella prendida el perro
     frena solo cerca de las cosas y se queda pisando en el sitio ("temblando");
   - zona muerta: ordenes minusculas (que el perro no puede caminar) = quieto, no pisar en el sitio.
@@ -30,8 +31,8 @@ from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Header
-from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Bool, Float32, String
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from std_msgs.msg import Bool, Float32, Float64MultiArray, String
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
@@ -47,7 +48,8 @@ from . import ajustes
 
 API_MOVE = 1008
 API_STOPMOVE = 1003
-API_STANDUP = 1004
+API_STANDUP = 1004             # "lock stand": de pie con las juntas trabadas (no equilibra ni camina)
+API_STANDDOWN = 1005           # echarse en el piso
 API_BALANCESTAND = 1002
 API_FREEWALK = 2045
 API_BODYHEIGHT = 1013          # altura del cuerpo RELATIVA a la normal, {"data": m}, de -0.18 a +0.03
@@ -57,13 +59,27 @@ EVITA_SET, EVITA_GET = 1001, 1002          # servicio "obstacles_avoid" de Unitr
 JUNTAS = ["%s_%s_joint" % (pata, j) for pata in ("FR", "FL", "RR", "RL") for j in ("hip", "thigh", "calf")]
 
 
+def seguro(f):
+    import functools
+    import traceback
+
+    @functools.wraps(f)
+    def g(self, *a, **k):
+        try:
+            return f(self, *a, **k)
+        except Exception as e:
+            self.get_logger().error("%s: %r\n%s" % (f.__name__, e, traceback.format_exc(limit=4)),
+                                    throttle_duration_sec=5.0)
+    return g
+
+
 class Driver(Node):
     def __init__(self):
         super().__init__("go2_driver")
         p = ajustes.declarador(self)          # 0 donde va 0.0 no tumba el nodo
-        self.vx_max = p("vx_max", 0.8).value
-        self.vy_max = p("vy_max", 0.4).value
-        self.wz_max = p("wz_max", 1.2).value
+        self.vx_max = p("vx_max", 1.1).value
+        self.vy_max = p("vy_max", 0.5).value
+        self.wz_max = p("wz_max", 1.6).value
         self.t_vigencia = p("t_vigencia", 0.4).value       # s que vale una orden de velocidad
         self.marcha_libre = p("freewalk", True).value       # firmware >= 1.1.7: FreeWalk
         self.pausa_control = p("pausa_con_control", True).value
@@ -74,6 +90,14 @@ class Driver(Node):
         # el Go2 casi no avanza por debajo de ~0.20 m/s (pisa en el sitio): si Nav2 pide menos y hay
         # espacio libre en esa direccion, sube a esta velocidad
         self.v_efectiva = p("v_efectiva", 0.20).value
+        # FRENO segun la distancia (todas las ordenes: Nav2, control, teleop). El Go2 Air no camina
+        # por debajo de ~0.20 m/s y tarda ~0.3 s en parar: a 0.20 m/s recorre ~6 cm despues de la
+        # orden. Para quedar a 'parar_a' (5 cm) del cuerpo hay que cortar a 5 + 6 = 11 cm, y cerca
+        # de algo ir a 0.20 (no menos: se quedaria pisando en el sitio, "frena lejos")
+        self.parar_a = p("parar_a", 0.05).value
+        self.latencia = p("latencia_parada", 0.30).value
+        self.umbral_parada = self.parar_a + self.v_efectiva * self.latencia
+        self.frenadas = 0
         self.w_efectiva = p("w_efectiva", 0.40).value
         # giro en el sitio MAS CHICO que esto = "ya casi estoy alineado": se para en vez de subirlo
         # a w_efectiva. Antes cualquier correccion chica de Nav2 se volvia 0.40 rad/s, el perro se
@@ -106,8 +130,29 @@ class Driver(Node):
         self.pub_diag = self.create_publisher(String, "/go2/driver_estado", 1)
         self.pub_evita = self.create_publisher(Request, "/api/obstacles_avoid/request", 10)
 
+        # odometria: lidar = /utlidar/robot_odom (la del L1 en el perro) | patas = SportModeState
+        # (patas + IMU del cuerpo). 'go2 escala' mide las dos contra el lidar crudo y elige.
+        self.fuente_odom = p("fuente_odom", "lidar").value
+        self.escala_odom = float(p("escala_odom", 1.0).value)
+        self.odom0 = None
+        self.t_pub_odom = 0.0
+        self.fuente_actual = None
+        self.ultima_pose = None
+        self.enganche = {}
+        self.t_glim = 0.0
+        # map->odom: lo publica este nodo con la correccion de go2_slam3d (con slam_toolbox, no)
+        self.tf_mapa = bool(p("tf_mapa", True).value)
+        self.correccion = (0.0, 0.0, 0.0, 0.0)
+        lat = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+        self.create_subscription(Float64MultiArray, "/go2/correccion",
+                                 lambda m: setattr(self, "correccion", tuple(m.data[:4])) if len(m.data) >= 4 else None, lat)
+        self.t_sport_rapido = 0.0
+        self.pub_odom_perro = self.create_publisher(Odometry, "/go2/odom_perro", 50)
         sd = qos_profile_sensor_data
         self.create_subscription(Odometry, "/utlidar/robot_odom", self.cb_odom, sd)
+        if self.fuente_odom == "glim":
+            self.create_subscription(Odometry, p("topico_glim", "/glim_ros/odom").value, self.cb_glim, 50)
+        self.create_subscription(SportModeState, "/sportmodestate", self.cb_sport_rapido, sd)
         self.create_subscription(SportModeState, "/lf/sportmodestate", self.cb_sport, sd)
         self.create_subscription(LowState, "/lf/lowstate", self.cb_low, sd)
         self.create_subscription(Twist, "cmd_vel", self.cb_cmd, 10)
@@ -121,7 +166,8 @@ class Driver(Node):
         self.create_subscription(Response, "/api/sport/response", self.cb_sport_resp, 10)
         self.altura_pedida, self.altura_resp, self.altura_info = 0.0, None, ""
         self.rid_altura = None
-        self.create_subscription(String, "/go2/limpiador_estado", self.cb_holg, 1)
+        self.create_subscription(String, "/go2/holguras", self.cb_holg, 5)        # ~15 Hz, cada nube
+        self.frenado = {}            # lado -> True mientras esta frenado (histeresis 11 -> 15 cm)
         # sin nubes del lidar Nav2 maneja a ciegas (y el TF del mapa se atrasa): pausa
         self.create_subscription(Header, "/go2/lidar_vivo", self.cb_vivo, 5)
         self.t_vivo = 0.0
@@ -134,6 +180,12 @@ class Driver(Node):
                                      lambda m: setattr(self, "cm_accion", int(m.action_type)), 10)
         self.create_service(Trigger, "/go2/levantar", self.srv_levantar)
         self.create_service(Trigger, "/go2/parar", self.srv_parar)
+        self.create_service(Trigger, "/go2/acostar", self.srv_acostar)
+        self.create_service(Trigger, "/go2/bloquear", self.srv_bloquear)
+        self.create_service(Trigger, "/go2/desbloquear", self.srv_desbloquear)
+        self.create_service(Trigger, "/go2/bloquear_alternar", self.srv_alternar)
+        self.bloqueado = False       # no se mueve con NADA hasta 'go2 desbloquear'
+        self.acostado = False        # echado: no se mueve hasta 'go2 levantar'
 
         self.cmd = (0.0, 0.0, 0.0)
         self.t_cmd = 0.0
@@ -158,34 +210,129 @@ class Driver(Node):
         self.create_timer(0.5, self.patas_de_pie)
         self.create_timer(2.0, self.prender_lidar)
         self.create_timer(3.0, self.revisar_evitacion)
-        self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odom con hora local")
+        self.get_logger().info("go2_driver listo: /cmd_vel -> Move a 20 Hz, odometria '%s' (escala %.3f)"
+                               % (self.fuente_odom, self.escala_odom))
 
     # ------------------------------------------------------------------ entradas
+    @seguro
     def cb_odom(self, m):
+        if self.fuente_odom == "lidar":
+            q = m.pose.pose.orientation
+            p = m.pose.pose.position
+            v = m.twist.twist
+            self.publicar_odom(m.header.stamp, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w),
+                               (v.linear.x, v.linear.y, v.linear.z), (v.angular.x, v.angular.y, v.angular.z),
+                               fuente="lidar")
+
+    @seguro
+    def publicar_odom(self, stamp_perro, pos, quat, vlin, vang, fuente="patas"):
+        """/odom + TF odom->base_link (hora de la laptop) y /go2/odom_perro (hora del perro, para
+        go2_nube y go2_slam3d). escala_odom corrige la escala de x, y de las patas ('go2 escala').
+        Si cambia la fuente (GLIM se calla -> patas, y vuelve), la pose sigue CONTINUA: la nueva
+        fuente se engancha donde quedo la anterior (sin saltos para Nav2)."""
+        ahora_m = time.monotonic()
+        if ahora_m - self.t_pub_odom < 0.01:
+            return                       # /sportmodestate llega a ~500 Hz: TF a 100 Hz basta (y no ahoga a Nav2)
+        self.t_pub_odom = ahora_m
+        k = self.escala_odom if fuente == "patas" else 1.0
+        if fuente == "patas":
+            if self.odom0 is None:
+                self.odom0 = pos
+            pos = (self.odom0[0] + k * (pos[0] - self.odom0[0]), self.odom0[1] + k * (pos[1] - self.odom0[1]), pos[2])
+        yaw = math.atan2(2 * (quat[3] * quat[2] + quat[0] * quat[1]), 1 - 2 * (quat[1] ** 2 + quat[2] ** 2))
+        if fuente != self.fuente_actual:
+            if self.ultima_pose is not None:
+                # enganche: correccion (x, y, z, giro) que lleva la pose nueva a la ultima publicada
+                lx, ly, lz, lyaw = self.ultima_pose
+                dyaw = lyaw - yaw
+                c, s_ = math.cos(dyaw), math.sin(dyaw)
+                self.enganche[fuente] = (lx - (c * pos[0] - s_ * pos[1]), ly - (s_ * pos[0] + c * pos[1]), lz - pos[2], dyaw)
+                self.get_logger().warn("odometria: %s -> %s (enganchada sin salto)" % (self.fuente_actual, fuente))
+            self.fuente_actual = fuente
+        ex, ey, ez, eyaw = self.enganche.get(fuente, (0.0, 0.0, 0.0, 0.0))
+        if eyaw or ex or ey or ez:
+            c, s_ = math.cos(eyaw), math.sin(eyaw)
+            pos = (c * pos[0] - s_ * pos[1] + ex, s_ * pos[0] + c * pos[1] + ey, pos[2] + ez)
+            qz, qw = math.sin(eyaw / 2), math.cos(eyaw / 2)          # q_enganche * q
+            x0, y0, z0, w0 = quat
+            quat = (qw * x0 - qz * y0, qw * y0 + qz * x0, qw * z0 + qz * w0, qw * w0 - qz * z0)
+            yaw += eyaw
+        x, y, z = pos
+        self.ultima_pose = (x, y, z, yaw)
         ahora = self.get_clock().now().to_msg()
         o = Odometry()
         o.header.stamp = ahora
         o.header.frame_id = "odom"
         o.child_frame_id = "base_link"
-        o.pose = m.pose
-        o.twist = m.twist
+        o.pose.pose.position.x, o.pose.pose.position.y, o.pose.pose.position.z = x, y, z
+        r = o.pose.pose.orientation
+        r.x, r.y, r.z, r.w = quat
+        o.twist.twist.linear.x, o.twist.twist.linear.y, o.twist.twist.linear.z = k * vlin[0], k * vlin[1], vlin[2]
+        o.twist.twist.angular.x, o.twist.twist.angular.y, o.twist.twist.angular.z = vang
         self.pub_odom.publish(o)
+        o.header.stamp = stamp_perro
+        self.pub_odom_perro.publish(o)
         t = TransformStamped()
         t.header.stamp = ahora
         t.header.frame_id = "odom"
         t.child_frame_id = "base_link"
-        p = m.pose.pose.position
-        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = p.x, p.y, p.z
-        t.transform.rotation = m.pose.pose.orientation
-        self.tf.sendTransform(t)
-        self.pose_xy = (p.x, p.y)
+        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = x, y, z
+        t.transform.rotation = o.pose.pose.orientation
+        if self.tf_mapa:
+            # map->odom (correccion del SLAM, /go2/correccion) con el MISMO sello: Nav2 nunca ve
+            # un TF del mapa viejo ni dos poses distintas del perro
+            cx, cy, cz, cyaw = self.correccion
+            tm = TransformStamped()
+            tm.header.stamp = ahora
+            tm.header.frame_id, tm.child_frame_id = "map", "odom"
+            tm.transform.translation.x, tm.transform.translation.y, tm.transform.translation.z = cx, cy, cz
+            tm.transform.rotation.z, tm.transform.rotation.w = math.sin(cyaw / 2), math.cos(cyaw / 2)
+            self.tf.sendTransform([t, tm])
+        else:
+            self.tf.sendTransform(t)
+        self.pose_xy = (x, y)
         self.n_odom += 1
         self.t_odom = time.monotonic()
 
+    @seguro
+    def cb_glim(self, m):
+        """Odometria de GLIM (pose de la IMU del cuerpo en su 'odom') -> base_link."""
+        self.t_glim = time.monotonic()
+        q, p, v = m.pose.pose.orientation, m.pose.pose.position, m.twist.twist
+        x, y, z, w = q.x, q.y, q.z, q.w
+        # base = imu * T_imu_base (la IMU esta en (-0.02557, 0, 0.04232) del centro, sin giro)
+        tx, ty, tz = 0.02557, 0.0, -0.04232
+        bx = p.x + (1 - 2 * (y * y + z * z)) * tx + 2 * (x * y - z * w) * ty + 2 * (x * z + y * w) * tz
+        by = p.y + 2 * (x * y + z * w) * tx + (1 - 2 * (x * x + z * z)) * ty + 2 * (y * z - x * w) * tz
+        bz = p.z + 2 * (x * z - y * w) * tx + 2 * (y * z + x * w) * ty + (1 - 2 * (x * x + y * y)) * tz
+        self.publicar_odom(m.header.stamp, (bx, by, bz), (x, y, z, w), (v.linear.x, v.linear.y, v.linear.z),
+                           (v.angular.x, v.angular.y, v.angular.z), fuente="glim")
+
+    @seguro
+    def cb_sport_rapido(self, m):
+        self.t_sport_rapido = time.monotonic()
+        self._odom_patas(m)
+
+    def _odom_patas(self, m):
+        if self.fuente_odom == "glim":
+            if time.monotonic() - self.t_glim < 0.5:
+                return                   # manda GLIM; las patas solo si GLIM se calla (respaldo)
+        elif self.fuente_odom != "patas":
+            return
+        q = m.imu_state.quaternion                      # w x y z
+        st = Header().stamp
+        st.sec, st.nanosec = int(m.stamp.sec), int(m.stamp.nanosec)
+        self.publicar_odom(st, tuple(float(v) for v in m.position), (float(q[1]), float(q[2]), float(q[3]), float(q[0])),
+                           tuple(float(v) for v in m.velocity), (0.0, 0.0, float(m.yaw_speed)))
+
+    @seguro
     def cb_sport(self, m):
         self.altura = float(m.body_height)
         self.modo = int(m.mode)
+        if time.monotonic() - self.t_sport_rapido > 0.5:      # sin /sportmodestate rapido: esta (20 Hz)
+            self._odom_patas(m)
 
+    @seguro
     def cb_low(self, m):
         self.soc = int(m.bms_state.soc)
         # angulos de los 12 motores -> /joint_states: el modelo del perro en RViz mueve las patas
@@ -212,10 +359,12 @@ class Driver(Node):
         if time.monotonic() - self.t_patas > 1.0:
             self.publicar_patas([0.0, 0.8, -1.5] * 4)
 
+    @seguro
     def cb_cmd(self, m):
         self.cmd = (m.linear.x, m.linear.y, m.angular.z)
         self.t_cmd = time.monotonic()
 
+    @seguro
     def cb_cmd_prio(self, m):
         self.cmd_prio = (m.linear.x, m.linear.y, m.angular.z)
         self.t_prio = time.monotonic()
@@ -293,7 +442,7 @@ class Driver(Node):
                 lado = "izq" if vy > 0 else "der"
                 costados = ("adelante",)
             d = H.get(lado)
-            libre = (d is None and lado != "atras") or (d is not None and d >= 0.35)
+            libre = (d is None and lado != "atras") or (d is not None and d >= self.umbral_parada)
             # y que no vaya rozando: los costados con algo de aire
             libre = libre and all(H.get(k) is None or H.get(k) >= 0.10 for k in costados)
             if libre:
@@ -309,6 +458,38 @@ class Driver(Node):
             # pasarse); una correccion real se sube al minimo con el que el Go2 si gira
             wz = 0.0 if abs(wz) < self.w_quieto else math.copysign(self.w_efectiva, wz)
         return vx, vy, wz
+
+    def gobernar(self, vx, vy):
+        """Velocidad maxima HACIA cada lado segun lo libre que hay (holguras del limpiador, desde el
+        borde del cuerpo): < umbral (11 cm) -> no avanza hacia ahi; hasta umbral + 20 cm -> 0.20 m/s
+        (lo minimo que camina); mas lejos sube 1.2 m/s por metro. Alejarse siempre se puede."""
+        H = self.holguras if time.monotonic() - self.t_holg < 1.0 else None
+        if H is None:
+            return vx, vy
+
+        def tope(d, lado):
+            if d is None:
+                return None
+            # histeresis: frena a < umbral (11 cm) y suelta recien a > umbral + 4 cm (no tironea)
+            if d < self.umbral_parada or (self.frenado.get(lado) and d < self.umbral_parada + 0.04):
+                self.frenado[lado] = True
+                return 0.0
+            self.frenado[lado] = False
+            # 0.9 m/s por metro libre: a 1 m/s empieza a frenar a ~1.2 m (el Go2 tarda 0.3 s en responder)
+            return max(self.v_efectiva, self.v_efectiva + 0.9 * (d - self.umbral_parada - 0.20))
+        for comp, lado_pos, lado_neg in ((0, "adelante", "atras"), (1, "izq", "der")):
+            v = (vx, vy)[comp]
+            lado = lado_pos if v > 0 else lado_neg
+            t = tope(H.get(lado), lado) if v else None
+            if t is not None and abs(v) > t:
+                v = math.copysign(t, v)
+                if t == 0.0:
+                    self.frenadas += 1
+                if comp == 0:
+                    vx = v
+                else:
+                    vy = v
+        return vx, vy
 
     def empuje(self, vx, vy, wz):
         """Si el perro no avanza lo que se le pide, subir la orden de a poco (ver __init__)."""
@@ -417,6 +598,7 @@ class Driver(Node):
     def remoto_activo(self):
         return self.pausa_control and time.monotonic() - self.t_remoto < 1.0
 
+    @seguro
     def lazo(self):
         ahora = time.monotonic()
         nav = False
@@ -427,7 +609,7 @@ class Driver(Node):
             nav = True
         else:
             vx = vy = wz = 0.0
-        if self.remoto_activo():
+        if self.remoto_activo() or self.bloqueado or self.acostado:
             vx = vy = wz = 0.0
         if nav and self.lidar_mudo() and (vx or vy or wz):
             vx = vy = wz = 0.0              # quieto hasta que vuelvan las nubes
@@ -448,6 +630,8 @@ class Driver(Node):
             vx, vy, wz = self.empuje(vx, vy, wz)
         else:
             self.emp_k, self.emp_p = 1.0, None
+        if (vx or vy) and not self.calibrando_mov and not self.en_escalera:
+            vx, vy = self.gobernar(vx, vy)
         self.ultima_orden = (vx, vy, wz)
         if abs(vx) > 1e-3 or abs(vy) > 1e-3 or abs(wz) > 1e-3:
             self._req(API_MOVE, {"x": vx, "y": vy, "z": wz})
@@ -465,6 +649,7 @@ class Driver(Node):
         # la app puede apagar el L1 (ahorro); esto lo deja prendido
         self.pub_lidar.publish(String(data="ON"))
 
+    @seguro
     def diag(self):
         if self.soc is not None:
             self.pub_bat.publish(Float32(data=float(self.soc)))
@@ -475,7 +660,8 @@ class Driver(Node):
              "orden": [round(v, 2) for v in self.ultima_orden], "ordenes_minimas": self.muertas,
              "subidas": self.subidas, "compensado": self.curvas is not None, "empuje": round(self.emp_k, 2),
              "lidar_mudo_s": round(time.monotonic() - self.t_vivo, 1) if self.lidar_mudo() else 0.0,
-             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info}
+             "pausas_lidar": self.pausas_lidar, "altura_info": self.altura_info,
+             "bloqueado": self.bloqueado, "acostado": self.acostado, "frenadas": self.frenadas}
         self.n_odom = 0
         self.envios = 0
         self.muertas = 0
@@ -493,6 +679,7 @@ class Driver(Node):
             self._req(API_FREEWALK)
 
     def srv_levantar(self, req, res):
+        self.acostado = False
         if self.altura is not None and self.altura > 0.22:
             res.success, res.message = True, "ya estaba de pie (altura %.2f m)" % self.altura
             return res
@@ -508,6 +695,52 @@ class Driver(Node):
         self._req(API_STOPMOVE)
         res.success, res.message = True, "parado"
         return res
+
+    def _quieto_ya(self):
+        # corta la orden en curso y deja el lazo en silencio (Move(0) a un perro echado lo levanta)
+        self.cmd = self.cmd_prio = (0.0, 0.0, 0.0)
+        self.t_cmd = self.t_prio = 0.0
+        self.movia, self.ceros = False, 0
+        self._req(API_MOVE, {"x": 0.0, "y": 0.0, "z": 0.0})
+        self._req(API_STOPMOVE)
+
+    def srv_acostar(self, req, res):
+        self.acostado = True
+        self._quieto_ya()
+
+        def echar():
+            time.sleep(0.5)
+            self._req(API_STANDDOWN)
+        threading.Thread(target=echar, daemon=True).start()
+        self.get_logger().info("ACOSTADO: no se mueve hasta 'go2 levantar'")
+        res.success, res.message = True, "acostandose (para pararlo: go2 levantar)"
+        return res
+
+    def srv_bloquear(self, req, res):
+        self.bloqueado = True
+        self._quieto_ya()
+        if not self.acostado:
+            threading.Thread(target=lambda: (time.sleep(0.5), self._req(API_STANDUP)), daemon=True).start()
+        self.get_logger().warn("BLOQUEADO: ignoro Nav2, teleop y el control hasta 'go2 desbloquear'")
+        res.success, res.message = True, "bloqueado: quieto y trabado (go2 desbloquear para soltarlo)"
+        return res
+
+    def srv_desbloquear(self, req, res):
+        estaba = self.bloqueado
+        self.bloqueado = False
+        if estaba and not self.acostado:
+            def soltar():
+                self._req(API_BALANCESTAND)
+                time.sleep(1.0)
+                if self.marcha_libre:
+                    self._req(API_FREEWALK)
+            threading.Thread(target=soltar, daemon=True).start()
+        self.get_logger().info("desbloqueado")
+        res.success, res.message = True, "desbloqueado" if estaba else "no estaba bloqueado"
+        return res
+
+    def srv_alternar(self, req, res):
+        return self.srv_desbloquear(req, res) if self.bloqueado else self.srv_bloquear(req, res)
 
 
 def main():

@@ -182,6 +182,9 @@ T_VISTO = 1.5          # s: un obstaculo a la vista del L1 que ya no se ve se ol
 # de 3 m. Con 20 s, el perro trabado en una puerta olvidaba el marco (en la zona ciega, junto a la
 # cabeza), el marco desaparecia del mapa y Nav2 lo empujaba contra el (prueba_puerta.py)
 T_FUERA = 120.0
+# ... pero DELANTE de la nariz solo T_FRENTE: ahi el L1 si ve (un poco mas lejos). Con 120 s, un
+# punto de ruido o alguien que ya se fue dejaba al perro frenado "contra nada" (informe de frenadas)
+T_FRENTE = 3.0
 T_SOLIDO = 1.0         # s: ... si se vio al menos este tiempo (un rebote de un instante no). Lo que
                        # entra a la zona ciega pegada al cuerpo (un marco de puerta) se recuerda igual
 
@@ -197,7 +200,11 @@ class Limpiador(Node):
         self.obst_min = p("obst_min", 0.10).value          # mas bajo se pisa (cables, umbrales)
         self.obst_max = p("obst_max", 0.55).value          # mas alto pasa por debajo
         self.caida_min = p("caida_min", 0.12).value
-        self.caida_r_max = p("caida_r_max", 2.0).value      # m del lidar: mas lejos no se marcan caidas
+        self.caida_r_max = p("caida_r_max", 2.0).value
+        # caidas (bordes de escalera / desniveles) como obstaculos virtuales. Con escaleras:=off
+        # (casa plana) van apagadas: el L1 ralo y el piso brillante daban "bajadas" falsas que
+        # cerraban el paso ("escalera de bajada a 1 m" sin ninguna escalera)
+        self.usar_caidas = bool(p("caidas", True).value)      # m del lidar: mas lejos no se marcan caidas
         self.sin_reflejos = p("quitar_reflejos", True).value  # piso brillante: quitar lo espejado
         self.altura_base = p("altura_base", 0.33).value     # base_link sobre el suelo (si no se ve)
         self.persistencia = p("persistencia", True).value
@@ -222,6 +229,7 @@ class Limpiador(Node):
         self.mem_t = np.zeros(0, np.float64)
         self.mem_t0 = np.zeros(0, np.float64)      # cuando se vio por primera vez
         self.pose = None            # (x, y, z, yaw) del perro en odom
+        self.pose_stamp = None
         self.suelo = None
         self.hist_caidas = collections.deque(maxlen=6)     # (puntos bajo el suelo, suelo xy) por nube
         self.hist_alto = collections.deque(maxlen=8)       # celdas con algo arriba del piso (reflejos)
@@ -250,6 +258,7 @@ class Limpiador(Node):
         self.pub_sin = self.create_publisher(PointCloud2, "/go2/nube_sin_fantasmas", sd)
         self.pub_scan = self.create_publisher(LaserScan, "/scan", sd)
         self.pub_est = self.create_publisher(String, "/go2/limpiador_estado", 1)
+        self.pub_holg = self.create_publisher(String, "/go2/holguras", 5)
         self.pub_vivo = self.create_publisher(Header, "/go2/lidar_vivo", 1)   # latido: llego una nube
         self.pub_giro = self.create_publisher(Twist, "cmd_vel_prioridad", 10)
         self.create_service(Trigger, "/go2/calibrar", self.srv_calibrar)
@@ -275,12 +284,22 @@ class Limpiador(Node):
     def cb_odom(self, m):
         p = m.pose.pose.position
         self.pose = (p.x, p.y, p.z, yaw_de_quat(m.pose.pose.orientation))
+        self.pose_stamp = m.header.stamp
 
     def cb_nube(self, msg):
         if self.pose is None:
             return
         t0 = time.perf_counter()
-        stamp = self.get_clock().now().to_msg()
+        # sello = el de la pose usada (= el del TF odom->base_link que ya publico el driver), NO "ahora".
+        # Con "ahora" cada nube llegaba a los costmaps de Nav2 ANTES que su TF: el filtro de TF las
+        # dejaba en espera y el hilo del TF de controller_server/planner_server se trababa a los
+        # 30-50 s (huella del perro con 115 s de atraso -> "Start occupied", "footprint not available")
+        stamp = self.pose_stamp
+        ahora = self.get_clock().now()
+        atraso = (ahora.nanoseconds - (stamp.sec * 10**9 + stamp.nanosec)) * 1e-9
+        if atraso > 0.3:
+            self.get_logger().warn("la odometria (/odom) no llega hace %.1f s: nubes con sello viejo" % atraso,
+                                   throttle_duration_sec=1.0)
         xyz = leer_xyz(msg)
         x, y, z, yaw = self.pose
         if msg.header.frame_id not in ("odom", "map", "world", ""):
@@ -337,7 +356,9 @@ class Limpiador(Node):
         self.pub_sin.publish(crear_nube(xyz0[~(caja if solo_caja else propio)], "odom", stamp))
         # 4) clases
         es_suelo = (np.abs(h) < 0.06) & ~propio
-        cand = (h >= self.obst_min) & (h <= self.obst_max) & ~propio
+        # cerca del L1 (< 0.45 m) su error de altura es mayor: ahi el piso necesita 4 cm mas para ser obstaculo
+        r_l1 = np.hypot(fx - self.lidar_fx, fy)
+        cand = (h >= self.obst_min + np.where(r_l1 < 0.45, 0.04, 0.0)) & (h <= self.obst_max) & ~propio
         # 5) confirmacion con varias nubes (nucleo/voxeles.py): un obstaculo real se ve en >= 2 de
         #    las ultimas 6 nubes; con el L1 (ralo) cada nube toca puntos distintos del mismo marco
         if self.persistencia:
@@ -353,6 +374,13 @@ class Limpiador(Node):
         # salidas. Nav2 usa SOLO esto: el mapa de costos se borra en cada vuelta (/go2/barrido)
         fant = np.concatenate([xyz[propio], ruido]) if len(ruido) else xyz[propio]
         obs_out = np.concatenate([obst, virtuales, recordados])
+        # CHICA: con la memoria (120 s) la nube crecia a decenas de miles de puntos = cientos de
+        # pedazos UDP; bastaba perder uno para perder la nube entera -> al collision_monitor le
+        # llegaba una cada 4-5 s ("invalid source": el perro parado) y a Nav2 tambien llegaban
+        # tarde. Lo que usa Nav2: puntos cada 3 cm a < 6 m del perro (lo lejano lo da el mapa)
+        if len(obs_out):
+            lejos = (obs_out[:, 0] - x) ** 2 + (obs_out[:, 1] - y) ** 2 > 36.0
+            obs_out = voxel_unico(obs_out[~lejos], 0.03)
         self.pub_barrido.publish(crear_nube(self.barrido(x, y, yaw, suelo), "odom", stamp))
         self.pub_obs.publish(crear_nube(obs_out, "odom", stamp))
         self.pub_suelo.publish(crear_nube(voxel_unico(xyz[es_suelo], 0.08), "odom", stamp))
@@ -362,6 +390,9 @@ class Limpiador(Node):
             self.publicar_scan(np.concatenate([pared, ciegos]), x, y, yaw, stamp)
         obst = np.concatenate([obst, recordados])
         self.ultimo = self.holguras(obst, virtuales, x, y, yaw)
+        # holguras en CADA nube (~15 Hz), aparte: antes solo salian a 1 Hz en limpiador_estado y el
+        # freno del driver/control trabajaba con datos de hasta 1 s (frenaba tarde, o seguia frenado)
+        self.pub_holg.publish(String(data=json.dumps(self.ultimo)))
         self.ultimo.update({"suelo_bajo_cuerpo": round(alto_cuerpo, 3), "puntos": int(len(xyz)),
                             "obstaculos": int(len(obst)), "fantasmas": int(len(fant)),
                             "caidas": int(len(virtuales) // 4), "reflejos": int(self.reflejos)})
@@ -437,7 +468,9 @@ class Limpiador(Node):
         dentro = (np.abs(fx) < LARGO2) & (np.abs(fy) < ANCHO2)
         altura_ok = (h > self.obst_min - 0.08) & (h < self.obst_max + 0.10)
         largo = ciego | (solido & ~a_la_vista)
-        guardar = cerca & ~dentro & altura_ok & np.where(largo, edad < T_FUERA, edad < T_VISTO)
+        frente = fx > LARGO2 - 0.05
+        guardar = cerca & ~dentro & altura_ok & np.where(largo, edad < np.where(frente, T_FRENTE, T_FUERA),
+                                                         edad < T_VISTO)
         self.mem_k, self.mem_xyz, self.mem_t, self.mem_t0 = mk[guardar], mx[guardar], mt[guardar], m0[guardar]
         # lo que se acaba de ver ya va en la nube de esta vuelta
         viejo = guardar & (edad > 0.0)
@@ -468,6 +501,8 @@ class Limpiador(Node):
         acerque al borde de una escalera o un desnivel. Junta las ultimas nubes (con el L1, ralo,
         una sola nube casi nunca da los puntos suficientes) y marca tambien la sombra del borde
         (ver terreno.caidas_rejilla)."""
+        if not self.usar_caidas:
+            return np.zeros((0, 3), np.float32)
         R = 2.5
         cerca = (np.abs(fx) < R) & (np.abs(fy) < R)
         bajo = cerca & (h < -self.caida_min)

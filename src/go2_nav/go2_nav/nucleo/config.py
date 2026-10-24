@@ -2,7 +2,7 @@
 parametros ROS del mismo nombre (ros2 param / launch)."""
 
 # huella de Nav2 (config/nav2.yaml): la forma del perro, cabeza mas angosta (m, marco del cuerpo)
-HUELLA = [(0.40, 0.10), (0.30, 0.16), (-0.37, 0.16), (-0.37, -0.16), (0.30, -0.16), (0.40, -0.10)]
+HUELLA = [(0.40, 0.10), (0.30, 0.17), (-0.37, 0.17), (-0.37, -0.17), (0.30, -0.17), (0.40, -0.10)]
 
 
 def en_huella(fx, fy, margen=0.0):

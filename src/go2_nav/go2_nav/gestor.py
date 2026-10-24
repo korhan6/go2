@@ -96,6 +96,8 @@ class Gestor(Node):
         # mapa guardado (go2 lanzar mapa:=NOMBRE): el perro solo se UBICA en el mapa; no explora ni
         # cruza escaleras (cambiaria el mapa). Los puntos van con el mapa: mapas/NOMBRE.puntos.json
         self.mapa_fijo = p("mapa", "").value.strip()
+        # go2 = go2_slam3d (un mapa 3D para toda la casa; cambia de piso solo) | toolbox = slam_toolbox
+        self.toolbox = p("slam", "go2").value == "toolbox"
         self.mapa_sesion = None      # el mapa que se guardo en ESTA sesion (los puntos nuevos van tambien ahi)
         os.makedirs(os.path.join(DATOS, "mapas"), exist_ok=True)
         self.ruta_puntos = (os.path.join(DATOS, "mapas", self.mapa_fijo + ".puntos.json") if self.mapa_fijo
@@ -144,6 +146,9 @@ class Gestor(Node):
         self.cli_levantar = self.create_client(Trigger, "/go2/levantar", callback_group=cb)
         self.cli_parar = self.create_client(Trigger, "/go2/parar", callback_group=cb)
         self.cli_esc = self.create_client(Comando, "/go2/escalera", callback_group=cb)
+        self.cli_mapa3d = self.create_client(Comando, "/go2/mapa3d", callback_group=cb)
+        self.cli_postura = {n: self.create_client(Trigger, "/go2/" + n, callback_group=cb)
+                            for n in ("acostar", "bloquear", "desbloquear", "bloquear_alternar")}
         self.cli_limpiar = [self.create_client(ClearEntireCostmap, s, callback_group=cb) for s in
                             ("/global_costmap/clear_entirely_global_costmap",
                              "/local_costmap/clear_entirely_local_costmap")]
@@ -198,11 +203,46 @@ class Gestor(Node):
         self.create_timer(0.5, self.lazo, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(0.5, self.publicar_estado, callback_group=MutuallyExclusiveCallbackGroup())
         self.create_timer(1.0, self.publicar_explorado, callback_group=MutuallyExclusiveCallbackGroup())
+        # VIGIA de Nav2: cada costmap publica la huella del perro con el sello de SU ultimo TF. Si ese
+        # sello se queda viejo, ese servidor dejo de recibir el TF (planifica desde donde el perro
+        # estaba hace rato). Se reinicia ese proceso (respawn + lifecycle_manager lo vuelve a activar)
+        from geometry_msgs.msg import PolygonStamped
+        self.huellas = {}            # nombre -> (t_llegada, edad del sello)
+        self.t_reinicio = {}
+        for top, proc in (("/local_costmap/published_footprint", "nav2_controller/controller_server"),
+                          ("/global_costmap/published_footprint", "nav2_planner/planner_server")):
+            self.create_subscription(PolygonStamped, top, lambda m, k=proc: self.cb_huella(k, m), 5,
+                                     callback_group=MutuallyExclusiveCallbackGroup())
+        self.create_timer(1.0, self.vigia_nav2, callback_group=MutuallyExclusiveCallbackGroup())
         if self.mapa_fijo:
             self.log("go2_gestor listo: NAVEGANDO en el mapa guardado '%s' (%d puntos: %s)"
                      % (self.mapa_fijo, len(self.puntos), ", ".join(sorted(self.puntos)) or "-"))
         else:
             self.log("go2_gestor listo: MAPEANDO (escaleras: %s, camara: %s)" % (self.politica, self.esc_vision))
+
+    # ------------------------------------------------------------------ vigia de Nav2
+    def cb_huella(self, proc, m):
+        ahora = self.get_clock().now().nanoseconds * 1e-9
+        edad = ahora - (m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
+        prev = self.huellas.get(proc)
+        viejo_desde = prev[2] if (prev and prev[1] > 2.0) else None
+        if edad > 2.0 and viejo_desde is None:
+            viejo_desde = time.monotonic()
+        self.huellas[proc] = (time.monotonic(), edad, viejo_desde if edad > 2.0 else None)
+
+    def vigia_nav2(self):
+        import subprocess
+        for proc, (t, edad, desde) in list(self.huellas.items()):
+            if desde is None or time.monotonic() - t > 3.0:
+                continue
+            if time.monotonic() - desde < 4.0 or time.monotonic() - self.t_reinicio.get(proc, 0.0) < 40.0:
+                continue
+            self.t_reinicio[proc] = time.monotonic()
+            self.log("!! VIGIA: %s ve al perro con TF de hace %.0f s (dejo de recibir /tf): lo reinicio"
+                     % (proc.split("/")[-1], edad))
+            self.get_logger().error("VIGIA: reinicio %s (TF %.0f s viejo)" % (proc, edad))
+            subprocess.run(["pkill", "-f", "lib/%s" % proc])
+            self.huellas.pop(proc, None)
 
     # ------------------------------------------------------------------ utilidades
     def log(self, txt):
@@ -876,7 +916,7 @@ class Gestor(Node):
     def _guardar_piso(self):
         P = self.pisos[self.piso]
         P["T"] = self.T_mapa_odom()
-        if SerializePoseGraph is None:
+        if SerializePoseGraph is None or not self.toolbox:
             return
         P["archivo"] = os.path.join(DATOS, "mapas", "piso_%d" % self.piso)
         r = self._llamar(self.cli_guardar, SerializePoseGraph.Request(filename=P["archivo"]), 20.0)
@@ -894,7 +934,8 @@ class Gestor(Node):
         p["usado"], p["destino"] = True, nuevo
         self.log("escalera LISTA (%s): piso %d -> %d" % (res.get("motivo", ""), self.piso, nuevo))
         # mapa del otro piso: nuevo = empezar de cero; conocido = recargar el suyo donde corresponde
-        if SerializePoseGraph is not None:
+        # (go2_slam3d lo hace solo: ve la altura del perro en el mapa 3D)
+        if SerializePoseGraph is not None and self.toolbox:
             P = self.pisos[nuevo]
             if conocido and P.get("archivo") and P.get("T") is not None:
                 x, y, yaw = res["pose_odom"]
@@ -1158,12 +1199,34 @@ class Gestor(Node):
             return self._orden_guardar_mapa(a)
         if o == "mapas":
             d = os.path.join(DATOS, "mapas")
-            nombres = sorted(f[:-10] for f in os.listdir(d) if f.endswith(".posegraph") and not f.startswith("piso_"))
+            fin = ".posegraph" if self.toolbox else ".slam3d.npz"
+            nombres = sorted(f[:-len(fin)] for f in os.listdir(d) if f.endswith(fin) and not f.startswith("piso_"))
             return True, ("mapas guardados: %s\nnavegar en uno: go2 lanzar mapa:=NOMBRE rviz:=true" % ", ".join(nombres)
                           if nombres else "no hay mapas guardados (go2 guardar_mapa NOMBRE)"), {"mapas": nombres}
         if o == "levantar":
             self.cli_levantar.call_async(Trigger.Request())
             return True, "levantando", {}
+        if o == "mapa3d":
+            req = Comando.Request()
+            req.orden = a[0] if a else "estado"
+            if req.orden == "guardar" and len(a) > 1:
+                nombre = "".join(c for c in a[1] if c.isalnum() or c in "-_") or "mapa3d"
+                req.args = [os.path.join(DATOS, "mapas", nombre + ".pcd")]
+            r = self._llamar(self.cli_mapa3d, req, 10.0)
+            if r is None:
+                return False, "go2_mapa3d no responde", {}
+            return r.ok, r.mensaje, {}
+        if o == "bloqueo":                      # control PS4 (L1+SHARE): bloquea o desbloquea
+            o = "bloquear_alternar"
+        if o in ("acostar", "bloquear", "desbloquear", "bloquear_alternar"):
+            if o != "desbloquear":
+                # que nada (exploracion, ruta, escalera) le siga mandando moverse
+                self.ordenar("parar", [])
+                self.modo, self.motivo = "quieto", ("acostado" if o == "acostar" else "bloqueado / parado")
+            r = self._llamar(self.cli_postura[o], Trigger.Request(), 3.0)
+            if r is None:
+                return False, "el driver no responde (/go2/%s)" % o, {}
+            return r.success, r.message, {}
         if o == "estado":
             return True, "", self.estado()
         if o == "volcar":
@@ -1187,9 +1250,22 @@ class Gestor(Node):
         nombre = "".join(c for c in a[0] if c.isalnum() or c in "-_")
         if not nombre or nombre.startswith("piso_"):
             return False, "nombre invalido (letras, numeros, - y _)", {}
+        base = os.path.join(DATOS, "mapas", nombre)
+        if not self.toolbox:
+            m3 = Comando.Request()
+            m3.orden, m3.args = "guardar", [base + ".pcd"]
+            r3 = self._llamar(self.cli_mapa3d, m3, 20.0)
+            if r3 is None or not r3.ok:
+                return False, "no se guardo: %s" % (r3.mensaje if r3 is not None else "go2_slam3d no responde"), {}
+            self.mapa_sesion = nombre
+            self._guardar_puntos()
+            self.log("mapa '%s' guardado (%s), con %d puntos" % (nombre, base, len(self.puntos)))
+            return True, ("%s\nmapa '%s' con %d puntos (%s).\nPara navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
+                          "(pon al perro donde EMPEZASTE a mapear, o marca donde esta con '2D Pose Estimate' en RViz)"
+                          % (r3.mensaje, nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno",
+                             nombre)), {}
         if SerializePoseGraph is None:
             return False, "falta slam_toolbox", {}
-        base = os.path.join(DATOS, "mapas", nombre)
         r = self._llamar(self.cli_guardar, SerializePoseGraph.Request(filename=base), 25.0)
         if r is None or not os.path.exists(base + ".posegraph"):
             return False, "slam_toolbox no guardo el mapa (esta corriendo? hay mapa en RViz?)", {}
@@ -1197,11 +1273,16 @@ class Gestor(Node):
         img.name.data = base
         self._llamar(self.cli_guardar_img, img, 10.0)          # imagen .pgm/.yaml para verlo (opcional)
         self.mapa_sesion = nombre
+        m3 = Comando.Request()
+        m3.orden, m3.args = "guardar", [base + ".pcd"]
+        r3 = self._llamar(self.cli_mapa3d, m3, 10.0)
+        nube3d = r3.mensaje if r3 is not None else "mapa 3D no guardado (go2_mapa3d no responde)"
         self._guardar_puntos()                                  # y los puntos que guardes despues, tambien
         self.log("mapa '%s' guardado (%s), con %d puntos" % (nombre, base, len(self.puntos)))
-        return True, ("mapa '%s' guardado con %d puntos (%s).\nPara navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
+        return True, ("mapa '%s' guardado con %d puntos (%s).\n" % (nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno")
+                      + nube3d + "\n" + ("Para navegar en el: go2 lanzar mapa:=%s rviz:=true\n"
                       "(pon al perro donde EMPEZASTE a mapear, o marca donde esta con '2D Pose Estimate' en RViz)"
-                      % (nombre, len(self.puntos), ", ".join(sorted(self.puntos)) or "ninguno", nombre)), {}
+                      % nombre)), {}
 
     def _orden_explorar(self, pose, a):
         if self.mapa_fijo:

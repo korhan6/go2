@@ -1,5 +1,7 @@
 # go2_nav (ROS 2): navegación autónoma para el Go2 por cable
 
+[![pruebas](https://github.com/korhan6/go2/actions/workflows/pruebas.yml/badge.svg)](https://github.com/korhan6/go2/actions/workflows/pruebas.yml)
+
 La laptop se conecta al perro por **Ethernet**, igual que la mochila EDU de Unitree: queda en la
 red interna (192.168.123.x) y recibe por **DDS directo** el lidar (~15 Hz), la odometría
 (~150 Hz) y el estado. **No hay WebRTC, ni compresión, ni servidores en el medio**: la latencia
@@ -16,6 +18,7 @@ es de milisegundos.
 | Ruta comprometida | árbol de comportamiento oficial de Nav2 *"replanning only if path becomes invalid"* | calcula la ruta y la sigue hasta el final; solo replanifica si queda bloqueada |
 | `go2_gestor` | propio | exploración por fronteras **con compromiso** (`nucleo/exploracion.py`), escaleras y pisos, puntos guardados, estado en vivo |
 | `go2_escaleras` | propio (`nucleo/terreno.py`, `nucleo/escaleras.py`) | confirma escaleras (subida: lidar + cámara; bajada: lidar viendo el primer escalón) y las cruza: **sube de frente, baja en reversa** |
+| `go2_ps4` | propio (`nucleo/mando.py`) | **control PS4** (DualShock 4 por USB o Bluetooth): manejar con L1 + sticks, parar todo, subir/bajar escaleras y guardar puntos desde el control |
 | `go2_vision` | [YOLOv8](https://github.com/ultralytics/ultralytics) entrenado con Open Images V7 (600 clases) | la **cámara del perro** por el cable, YOLO en la **GPU** de la laptop: ve escaleras, personas, sillas, puertas... y las ubica en el mapa con la distancia del lidar |
 
 ### La huella (obstacle avoidance)
@@ -115,7 +118,126 @@ go2 ir B
 Mientras lo manejas, el mapa se arma solo (en RViz: gris = sin ver, transparente = suelo visto,
 morado = obstáculo, verde = zonas por explorar, amarillo = la meta actual).
 
+### Control PS4 (DualShock 4)
+Arranca solo con `go2 lanzar` (paquete `joy`; si el control no está conectado, espera a que lo
+conectes). Con L1 suelto **no manda nada**: Nav2 y la exploración siguen solos.
+
+| Botón | Qué hace |
+|---|---|
+| **mantener L1** + stick izquierdo | avanzar / retroceder / de lado (soltar L1 = el perro se para) |
+| **mantener L1** + stick derecho | girar |
+| L1 + R1 | rápido (0.6 m/s en vez de 0.4) |
+| **CÍRCULO** | **PARAR TODO** (exploración, ruta, escalera). Funciona sin L1 |
+| SHARE | pausa / seguir |
+| L1 + TRIÁNGULO | levantarse |
+| L1 + OPTIONS | subir la escalera que tiene delante (de frente) |
+| L1 + PS (botón central) | bajar la escalera que tiene delante (gira 180° y baja en reversa) |
+| L1 + CUADRADO | guardar un punto aquí (`control_1`, `control_2`, ...: `go2 ir control_1`) |
+| L1 + CRUZ | **acostarse** (no se mueve con nada hasta L1 + TRIÁNGULO) |
+| L1 + SHARE | **bloquear / desbloquear** (de pie y trabado: ignora Nav2, teleop y los sticks) |
+
+### Acostar y bloquear
+```
+go2 acostar       # se echa (StandDown) y no se mueve con NADA hasta:
+go2 levantar
+go2 bloquear      # de pie con las juntas trabadas; ignora Nav2, 'go2 manejar' y el control PS4
+go2 desbloquear   # vuelve a equilibrar (BalanceStand + FreeWalk) y acepta órdenes
+```
+Las dos paran primero lo que estuviera haciendo (exploración, ruta, escalera). El control remoto
+**de Unitree** sigue funcionando siempre (es el firmware del perro, no go2_nav).
+
+- Mientras lo manejas, **frena solo** si hay algo a menos de 20 cm del cuerpo en esa dirección
+  (igual que `go2 manejar`) y el control **tiene prioridad sobre Nav2**.
+- Si el control se desconecta con L1 apretado, el perro se para y Nav2 recupera el mando.
+- **Si un botón no hace lo que dice la tabla:** el orden de botones depende del driver de Linux
+  (13 botones con el del kernel, 15-16 con SDL). Se elige solo, pero lo más seguro es medirlo una vez:
+  ```
+  go2 control      # aprieta cada botón y mueve cada stick cuando te lo pida -> ~/.go2_nav/ps4.yaml
+  ```
+  Si dice que no llega nada: control prendido/emparejado (PS + SHARE hasta que parpadee),
+  `ls /dev/input/js*`, y `sudo usermod -aG input $USER` (cerrar sesión).
+- Sin control: `go2 lanzar control:=false`.
+
+### Diagnóstico del L1 (`go2 diagnostico`)
+Con el perro **quieto, de pie y en piso plano**, mide 8 s y dice: Hz y puntos de la nube, el campo
+de tiempo por punto, qué parte de la nube es el propio perro, el desfase del reloj del perro y si la
+IMU interna del L1 coincide con el piso que ve el lidar. Lo guarda en `~/.go2_nav/diagnostico_l1.txt`
+(mándalo si algo del lidar se ve raro). Medido en un Go2 (23-oct-2026): 15 Hz, ~1100 puntos, la
+mitad a menos de 25 cm (el cuerpo), reloj del perro 3.5 s atrasado, y la IMU interna del L1
+**girada 122° en z** respecto a la nube: por eso go2_nav usa la odometría del propio perro
+(`/utlidar/robot_odom`) y no una odometría lidar-inercial con la IMU del L1.
+
+### GLIM (`go2 lanzar slam:=glim`)
+SLAM lidar-inercial profesional (koide3/GLIM), en la **GPU** si se instala con CUDA:
+```
+go2 instalar_glim                  # una vez (PPA oficial; con GPU si se puede)
+go2 lanzar slam:=glim rviz:=true
+```
+- entra la nube CRUDA del L1 sin el cuerpo (`/go2/l1_sin_cuerpo`, de go2_nube) y la IMU del
+  **cuerpo** (`/go2/imu`, de go2_imu: SportModeState, mismo reloj). NO la IMU interna del L1 (girada
+  122 grados: por eso fallaba antes). Extrinseca del URDF. Config: `~/.go2_nav/glim/`.
+- GLIM da la odometria (el driver la usa; si GLIM se calla 0.5 s vuelve a las patas sin salto) y el
+  mapa global con cierre de lazos (map->odom). go2_slam3d dibuja el 2D para Nav2 y el 3D.
+- con `mapa:=casa`: GLIM solo odometria y go2_slam3d se ubica en el mapa guardado.
+
+### SLAM 3D (`go2_slam3d`, por defecto)
+slam_toolbox solo veía un "scan" 2D ralo armado de la nube del L1: emparejaba mal y el mapa salía
+con paredes dobles y rayos sueltos. `go2_slam3d` usa la **nube 3D completa** (suelo, paredes,
+muebles, techo):
+1. la odometría del perro da el movimiento corto;
+2. cada nube se **alinea contra el mapa 3D** ya armado (punto-a-plano, x/y/z/giro; lo que no calza,
+   como una persona, casi no cuenta). Esa corrección es el TF `map->odom`;
+3. si una nube no calza bien (pocos puntos, salto grande) **se descarta**: sigue con la odometría y
+   esa nube no ensucia el mapa;
+4. el **mapa 2D** (`/map`, el de Nav2) sale de los obstáculos y el suelo ya alineados, con rayos
+   (log-odds): pared = vista muchas veces, sin rayos sueltos. Uno por piso (cambia solo).
+
+El L1 barre en anillos: si la nube "se pega" a su propio patrón, la alineación pediría mover al
+perro más de lo que la odometría puede derivar (6 % de lo recorrido): esa nube se descarta.
+`go2 mapa3d` dice la última descartada y por qué. `go2 escala` mide si la odometría mide bien
+(frente a una pared, avanza 0.6 m y compara con el lidar). `go2 grabar` graba todo para afinarlo
+sin el perro.
+
+Volver a pasar por un lugar ya mapeado lo re-alinea: la deriva no se acumula. Probado sin ROS en un
+cuarto simulado con una odometría que deriva 1.5 m / 38° y una persona caminando: queda en 4 cm /
+0.1° (`pruebas/prueba_slam3d.py`). `go2 mapa3d` dice cómo va. El de antes: `go2 lanzar slam:=toolbox`.
+Con un mapa guardado (`mapa:=casa`) arranca donde empezaste a mapear; si no, usa **2D Pose
+Estimate** en RViz.
+
+### Hitbox y navegacion (valores elegidos)
+| | valor | por que |
+|---|---|---|
+| huella | +0.40 / -0.37 m, +-0.17 m | el cuerpo del Go2 (0.70 x 0.31) con las patas al trotar |
+| margen del controlador | 6 cm | ruido del L1 (+-3) + error de posicion (+-3) + balanceo |
+| freno de emergencia | huella + 5 cm (stop) | para solo si algo queda a < 5 cm del cuerpo |
+| ir mas lento | 25 cm delante del hocico, al 40 % | el Go2 tarda ~0.3 s en responder: asi alcanza a parar a ~5 cm |
+| meta | 0.20 m | "go2 ir cocina" llega de verdad |
+| marcha atras | -0.1 m/s | el L1 casi no ve atras |
+| planificador | Smac 2D | rutas suaves, por el centro de los pasillos |
+| controlador | MPPI + Rotation Shim | el mas robusto de Nav2 |
+| obstaculos | capa 2D (o `obstaculos:=stvl`: voxeles 3D que se olvidan en 4 s) | |
+
+GPU (RTX): la vision (YOLO) ya corre en la GPU en FP16. `go2 vision_trt` la pasa a TensorRT
+(2-3 veces mas rapida). Nav2 (C++) y el SLAM (nubes chicas, KD-tree) van mas rapido en la CPU.
+
+### Mapas: 2D limpio y 3D a color
+- **Mapa 2D** (`/map`): blanco = libre, negro = pared, gris = sin ver. Es el que usa
+  Nav2 y el que se guarda como imagen (`~/.go2_nav/mapas/NOMBRE.pgm`).
+- **Mapa 3D** (`/go2/mapa_3d`): todo lo que vio el lidar, en voxeles de 5 cm,
+  **color = altura** (suelo azul → paredes verde/amarillo → techo rojo). Un punto que aparece en
+  menos de 3 nubes (rebote, alguien que pasó) no queda. Se arma solo mientras el perro camina.
+  ```
+  go2 ver3d               # RViz en 3D (órbita: arrastra para girar, rueda = zoom)
+  go2 guardar_mapa casa   # guarda el 2D, los puntos Y el 3D (~/.go2_nav/mapas/casa.pcd)
+  go2 ver3d casa          # mira el 3D guardado, sin el perro
+  go2 mapa3d borrar       # empezarlo de cero
+  ```
+  El `.pcd` se abre también con CloudCompare, `pcl_viewer` u Open3D. Con `go2 lanzar mapa:=casa`
+  se carga y se sigue completando.
+
 ### Qué muestra RViz
+- Por defecto: **Mapa 2D** + **Mapa 3D** (vista desde arriba). La nube en vivo, los obstáculos
+  naranjas y el "Mapa explorado" del gestor vienen apagados: préndelos en la lista si los necesitas.
 - **El perro de verdad** (modelo 3D de Unitree) en vez de la caja: las patas se mueven con los
   ángulos reales de los motores. La caja (la huella de Nav2) y la zona de frenado siguen en la
   lista de RViz, apagadas: prende "Huella del perro" si quieres verla. (Mallas y medidas:
@@ -196,6 +318,7 @@ pasado). Ahora:
 | `guardar A` → explorar → `ir A` | llega a 3 cm de A |
 | `calibrar` con fantasmas pegados al cuerpo | adelante 0.17 → 3.06 m; luego explora normal |
 | Tu grabación real (18-oct) por el limpiador | lados limpios, 0 caídas falsas con 19 % de reflejos, 3 ms por nube |
+| Control PS4: orden kernel (13 botones) y SDL (16), hombre muerto, CÍRCULO sin L1, L1+PS = bajar, frenos a 20 cm, zona muerta del stick (`prueba_mando.py`, también en GitHub Actions) | todo OK |
 | **Piso brillante** con una mesa delante, girando 20 s (`prueba_brillo.py`, con Nav2) | celdas de obstáculo falsas en el mapa de costos local: 57 → 0; caídas y escaleras de bajada falsas: 0 |
 
 ## Visión por computadora (cámara + YOLO en la GPU)

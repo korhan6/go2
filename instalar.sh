@@ -2,10 +2,12 @@
 # go2_nav - instalador para la LAPTOP (Ubuntu 24.04 -> ROS 2 Jazzy; Ubuntu 22.04 -> Humble)
 #   tar xzf go2_nav_ros2.tar.gz && cd go2_nav_ros2 && bash instalar.sh
 #   SIN_VISION=1 bash instalar.sh    -> sin la vision por computadora (camara + YOLO en la GPU)
+#   GO2_NAV_WS=~/go2nav_ws bash instalar.sh -> en OTRO espacio de trabajo (si ~/go2_ws ya tiene otro
+#                                              proyecto con los mensajes de Unitree: no se mezclan)
 # Deja todo en ~/go2_ws y el comando 'go2'. Pide la clave de sudo (apt).
 set -e
 AQUI="$(cd "$(dirname "$0")" && pwd)"
-WS="$HOME/go2_ws"
+WS="${GO2_NAV_WS:-$HOME/go2_ws}"
 
 if [ -n "$VIRTUAL_ENV" ]; then
   echo "Tienes un entorno virtual de Python activo ($VIRTUAL_ENV)."
@@ -33,8 +35,11 @@ fi
 echo "== Paquetes (Nav2, slam_toolbox, CycloneDDS, RViz)"
 sudo apt-get update
 sudo apt-get install -y ros-$DISTRO-ros-base ros-$DISTRO-navigation2 ros-$DISTRO-slam-toolbox \
-  ros-$DISTRO-rmw-cyclonedds-cpp ros-$DISTRO-rosidl-generator-dds-idl ros-$DISTRO-rviz2 ros-$DISTRO-nav2-rviz-plugins \
+  ros-$DISTRO-rmw-cyclonedds-cpp ros-$DISTRO-rosidl-generator-dds-idl ros-$DISTRO-rviz2 ros-$DISTRO-nav2-rviz-plugins ros-$DISTRO-joy \
   python3-colcon-common-extensions python3-numpy python3-scipy git
+
+# opcional: obstaculos en voxeles 3D que se olvidan solos (go2 lanzar obstaculos:=stvl)
+sudo apt-get install -y ros-$DISTRO-spatio-temporal-voxel-layer 2>/dev/null || echo "(STVL no disponible en apt: opcional)"
 
 echo "== Red: buffers grandes para las nubes del lidar"
 printf 'net.core.rmem_max=2147483647\nnet.core.rmem_default=8388608\nnet.ipv4.ipfrag_time=3\nnet.ipv4.ipfrag_high_thresh=134217728\n' | sudo tee /etc/sysctl.d/60-go2-dds.conf >/dev/null
@@ -58,7 +63,7 @@ cd "$WS"
 colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
 
 cp "$AQUI/go2_env.sh" "$WS/go2_env.sh"
-sed -i "s/__DISTRO__/$DISTRO/" "$WS/go2_env.sh"
+sed -i "s/__DISTRO__/$DISTRO/g; s#__WS__#$WS#g" "$WS/go2_env.sh"
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/go2" <<EOF
 #!/bin/bash
@@ -85,7 +90,7 @@ case "\$1" in
 esac
 EOF
 chmod +x "$HOME/.local/bin/go2"
-if ! grep -q "go2_ws/go2_env.sh" "$HOME/.bashrc"; then
+if ! grep -q "$WS/go2_env.sh" "$HOME/.bashrc"; then
   echo "source $WS/go2_env.sh" >> "$HOME/.bashrc"
 fi
 

@@ -1,0 +1,27 @@
+# Pruebas sin ROS en cada push: el nucleo (escaleras, exploracion, limpiador, mapa) contra el perro
+# simulado, la logica del control PS4 y errores de Python (nombres sin definir, sintaxis).
+name: pruebas
+on:
+  push:
+  pull_request:
+jobs:
+  nucleo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"          # el de Ubuntu 24.04 / ROS 2 Jazzy
+      - name: dependencias (numpy 1.x como ROS 2 Jazzy)
+        run: pip install "numpy<2" scipy pyyaml ruff
+      - name: errores de Python
+        run: ruff check --select F,E9 .
+      - name: control PS4
+        run: python3 pruebas/prueba_mando.py
+      - name: Mapa 3D (sin ROS)
+        run: python3 pruebas/prueba_mapa3d.py
+      - name: SLAM 3D (cuarto simulado, odometria con deriva, una persona caminando)
+        run: python3 pruebas/prueba_slam3d.py
+      - name: nucleo (escaleras, exploracion, limpiador)
+        run: python3 pruebas/prueba_nucleo.py

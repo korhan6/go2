@@ -166,8 +166,20 @@ class Detector(object):
         if not os.path.isabs(modelo):
             os.makedirs(MODELOS, exist_ok=True)
             modelo = os.path.join(MODELOS, modelo)
-        self.archivo = modelo
-        self.m = YOLO(modelo)
+        # TensorRT (FP16, 'go2 vision_trt'): el mismo modelo 2-3 veces mas rapido en la RTX
+        motor = os.path.splitext(modelo)[0] + ".engine"
+        if cuda and os.path.exists(motor) and imgsz == 640:
+            try:
+                self.m = YOLO(motor, task="detect")
+                self.archivo = motor
+                self.gpu += " + TensorRT FP16"
+            except Exception:
+                self.m = None
+        else:
+            self.m = None
+        if self.m is None:
+            self.archivo = modelo
+            self.m = YOLO(modelo)
         self.nombres = self.m.names
         self.modo = "GPU CUDA" if cuda else "CPU %d hilos" % torch.get_num_threads()
         self.imgsz, self.conf = imgsz, conf
@@ -198,7 +210,25 @@ def dibujar(img, dets, nombres):
 
 
 # ------------------------------------------------------------------ nodo ROS 2
+def exportar_trt():
+    """go2 vision_trt: convierte el modelo YOLO a TensorRT FP16 para la GPU (una vez, ~5-10 min)."""
+    import torch
+    from ultralytics import YOLO
+    if not torch.cuda.is_available():
+        print("sin GPU CUDA: TensorRT no aplica")
+        return 1
+    pt = os.path.join(MODELOS, "yolov8m-oiv7.pt")
+    if not os.path.exists(pt):
+        YOLO(pt)                                  # lo baja
+    print("exportando %s a TensorRT FP16 en %s (tarda unos minutos)..." % (pt, torch.cuda.get_device_name(0)))
+    ruta = YOLO(pt).export(format="engine", half=True, imgsz=640, device=0, workspace=2, verbose=False)
+    print("listo: %s\nrelanza 'go2 lanzar': la vision lo usa sola ('go2 vision_probar' muestra la velocidad)" % ruta)
+    return 0
+
+
 def main():
+    if "--trt" in sys.argv:
+        return exportar_trt()
     if "--probar" in sys.argv:
         return probar(sys.argv[sys.argv.index("--probar") + 1:])
     import rclpy

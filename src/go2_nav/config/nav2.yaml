@@ -7,12 +7,12 @@
 #   - ADELANTE: la cabeza, mas angosta que el cuerpo: hasta 0.40 m (el hocico esta a 0.36) y +-0.10
 #     de ancho. Antes era un rectangulo hasta 0.45 m de punta a punta: con el margen, para girar en
 #     el sitio pedia 57 cm libres alrededor y en un pasillo de 1 m "no cabia". Ahora pide ~48 cm.
-#   - y footprint_padding 0.07 en el costmap LOCAL (el que usa el controlador): con el L1 (ralo) la
+#   - y footprint_padding 0.05 en el costmap LOCAL (el que usa el controlador): con el L1 (ralo) la
 #     arista de un marco de puerta queda a veces sin marcar (los rayos rasantes que pasan por la
 #     puerta borran esa celda) y sin margen la esquina del perro la enganchaba al girar saliendo de
 #     la puerta (pruebas/prueba_puerta.py, puerta de 72 cm, meta directa: margen 0 -> 2 de 6 sin
 #     chocar; 0.05 -> 5 de 6; 0.07 -> 6 de 6).
-# collision_monitor = SOLO emergencias: el cuerpo exacto + 2 cm y 0.5 s antes del choque. Lo que se
+# collision_monitor = SOLO emergencias: PARA si algo queda a < 6 cm del cuerpo. Lo que se
 # ve de lejos lo esquiva el MPPI (con el margen), no lo frena el monitor.
 # El perro camina de lado y gira en el sitio: controlador MPPI con modelo "Omni" (vx, vy, wz).
 # Asi, si no cabe girando, se desliza de lado o retrocede en vez de quedarse "sin espacio".
@@ -38,7 +38,7 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    controller_frequency: 20.0
+    controller_frequency: 15.0           # a 20 Hz no le alcanzaba la CPU (iba a 10.8 Hz)
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001      # el Go2 SI camina de lado
@@ -53,11 +53,12 @@ controller_server:
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.20
       required_movement_angle: 0.4
-      movement_time_allowance: 15.0
+      # 6 s sin avanzar 20 cm ni girar 23 grados = trabado -> ruta nueva (antes 15 s: "tarda TANTO")
+      movement_time_allowance: 6.0
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.35          # de frente no puede corregir de lado: no rondar la meta
+      xy_goal_tolerance: 0.20          # llegar de verdad al punto ("go2 ir cocina")
       yaw_goal_tolerance: 0.6
     FollowPath:
       # Rotation Shim: si la ruta arranca en otra direccion, primero GIRA en el sitio (rapido) y
@@ -75,9 +76,9 @@ controller_server:
       closed_loop: false
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
-      time_steps: 56
-      model_dt: 0.05
-      batch_size: 1500
+      time_steps: 40
+      model_dt: 0.07                      # >= 1/controller_frequency (MPPI lo exige); horizonte 2.8 s
+      batch_size: 1000
       ax_max: 2.0
       ax_min: -2.0
       ay_max: 2.0
@@ -86,10 +87,10 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.3                         # menos ruido de giro en las muestras: menos zigzag
-      vx_max: 0.6
-      vx_min: -0.3
+      vx_max: 0.85
+      vx_min: -0.1                        # el L1 casi no ve atras: marcha atras solo despacio
       vy_max: 0.35
-      wz_max: 1.0
+      wz_max: 1.3
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.2
@@ -180,8 +181,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
-      footprint_padding: 0.07          # ver arriba
+      footprint: "[[0.40, 0.10], [0.30, 0.17], [-0.37, 0.17], [-0.37, -0.17], [0.30, -0.17], [0.40, -0.10]]"
+      footprint_padding: 0.06          # 6 cm: ruido del L1 (+-3) + error de posicion (+-3) + balanceo al trotar
       # SOLO lo que ve el lidar (sin las paredes del SLAM): el obstacle_layer se borra bajo la
       # huella del perro; una capa estatica no, y pegado a un marco la huella misma quedaba "en
       # choque" -> el MPPI no encontraba ninguna trayectoria ("Optimizer fail to compute path")
@@ -244,7 +245,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.40, 0.10], [0.30, 0.16], [-0.37, 0.16], [-0.37, -0.16], [0.30, -0.16], [0.40, -0.10]]"
+      footprint: "[[0.40, 0.10], [0.30, 0.17], [-0.37, 0.17], [-0.37, -0.17], [0.30, -0.17], [0.40, -0.10]]"
       footprint_padding: 0.0           # el planificador usa la huella real (el margen va en el local)
       resolution: 0.05
       # ventana de 40 x 40 m que sigue al perro: el mapa de SLAM crece mientras explora y las
@@ -308,10 +309,22 @@ planner_server:
     planner_plugins: ["GridBased"]
     costmap_update_timeout: 1.0
     GridBased:
-      plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.4
-      use_astar: true
+      # Smac 2D (A* con costo): rutas mas suaves y por el centro de los pasillos (antes NavFn)
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.25
+      downsample_costmap: false
+      downsampling_factor: 1
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
 
 behavior_server:
   ros__parameters:
@@ -344,8 +357,8 @@ velocity_smoother:
     stamp_smoothed_velocity_with_smoothing_time: False
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.6, 0.35, 1.0]
-    min_velocity: [-0.3, -0.35, -1.0]
+    max_velocity: [0.85, 0.35, 1.3]
+    min_velocity: [-0.1, -0.35, -1.3]
     max_accel: [1.5, 1.5, 3.0]
     max_decel: [-2.0, -2.0, -3.5]
     odom_topic: "odom"
@@ -364,29 +377,36 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.3
-    source_timeout: 1.0
+    # 0 = no para al perro solo porque una nube llego tarde (eso lo cuida el driver: sin nubes del
+    # limpiador > 0.7 s -> quieto). Con 1.0 lo paraba 4-5 s cada vez que se perdian unas nubes
+    source_timeout: 0.0
     base_shift_correction: True
     stop_pub_timeout: 2.0
-    polygons: ["Huella", "Frente"]
+    polygons: ["Huella"]
     Huella:
+      # RESPALDO: el freno fino lo hace el driver (gobernar: corta a 11 cm, queda a ~5 cm). Esto
+      # solo actua si algo se acerca rapido a < 3 cm del cuerpo. "approach" (no "stop"): deja
+      # alejarse; un "stop" pegado a una pared dejaba al perro trabado. Sin la zona "Frente" que
+      # bajaba al 40 %: por debajo de 0.20 m/s el Go2 Air no camina y se quedaba lejos
       type: "polygon"
       action_type: "approach"
-      points: "[[0.42, 0.11], [0.32, 0.18], [-0.39, 0.18], [-0.39, -0.18], [0.32, -0.18], [0.42, -0.11]]"
-      time_before_collision: 0.5
+      points: "[[0.43, 0.13], [0.33, 0.20], [-0.40, 0.20], [-0.40, -0.20], [0.33, -0.20], [0.43, -0.13]]"
+      time_before_collision: 0.3
       simulation_time_step: 0.05
-      min_points: 4
+      min_points: 8                       # 4 = una sola celda de caida virtual frenaba al perro
       visualize: False
       enabled: True
     Frente:
-      # justo delante del hocico (20 cm): ahi va un poco mas despacio (antes 39 cm y a la mitad)
+      # 25 cm delante del hocico: ahi va al 40 % -> el Go2 (tarda ~0.3 s en responder) alcanza a
+      # parar a ~5 cm en vez de pasarse
       type: "polygon"
       action_type: "slowdown"
-      points: "[[0.60, 0.16], [0.60, -0.16], [0.40, -0.16], [0.40, 0.16]]"
-      slowdown_ratio: 0.7
+      points: "[[0.65, 0.17], [0.65, -0.17], [0.40, -0.17], [0.40, 0.17]]"
+      slowdown_ratio: 0.4
       min_points: 4
       visualize: True
       polygon_pub_topic: "zona_frente"
-      enabled: True
+      enabled: False                     # (fuera de 'polygons': la frena el driver, ver Huella)
     observation_sources: ["obstaculos"]
     obstaculos:
       type: "pointcloud"
