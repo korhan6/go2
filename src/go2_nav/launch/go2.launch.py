@@ -181,12 +181,13 @@ def _controlador(context):
 def _nube(context):
     extra = _ajustes()[0]
     sim = LaunchConfiguration("sim").perform(context) == "true"
+    caidas = {"caidas": LaunchConfiguration("escaleras").perform(context) != "off"}
     if LaunchConfiguration("nube").perform(context) == "unitree" or sim:
         return [Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="both",
-                     parameters=extra)]
+                     parameters=[caidas] + extra)]
     return [Node(package="go2_nav", executable="nube", name="go2_nube", output="both", parameters=extra, respawn=True, respawn_delay=2.0),
             Node(package="go2_nav", executable="limpiador", name="go2_limpiador", output="both",
-                 parameters=[{"topico_nube": "/go2/nube_odom"}] + extra)]
+                 parameters=[{"topico_nube": "/go2/nube_odom"}, caidas] + extra)]
 
 
 @functools.lru_cache(maxsize=None)

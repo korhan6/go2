@@ -200,7 +200,11 @@ class Limpiador(Node):
         self.obst_min = p("obst_min", 0.10).value          # mas bajo se pisa (cables, umbrales)
         self.obst_max = p("obst_max", 0.55).value          # mas alto pasa por debajo
         self.caida_min = p("caida_min", 0.12).value
-        self.caida_r_max = p("caida_r_max", 2.0).value      # m del lidar: mas lejos no se marcan caidas
+        self.caida_r_max = p("caida_r_max", 2.0).value
+        # caidas (bordes de escalera / desniveles) como obstaculos virtuales. Con escaleras:=off
+        # (casa plana) van apagadas: el L1 ralo y el piso brillante daban "bajadas" falsas que
+        # cerraban el paso ("escalera de bajada a 1 m" sin ninguna escalera)
+        self.usar_caidas = bool(p("caidas", True).value)      # m del lidar: mas lejos no se marcan caidas
         self.sin_reflejos = p("quitar_reflejos", True).value  # piso brillante: quitar lo espejado
         self.altura_base = p("altura_base", 0.33).value     # base_link sobre el suelo (si no se ve)
         self.persistencia = p("persistencia", True).value
@@ -497,6 +501,8 @@ class Limpiador(Node):
         acerque al borde de una escalera o un desnivel. Junta las ultimas nubes (con el L1, ralo,
         una sola nube casi nunca da los puntos suficientes) y marca tambien la sombra del borde
         (ver terreno.caidas_rejilla)."""
+        if not self.usar_caidas:
+            return np.zeros((0, 3), np.float32)
         R = 2.5
         cerca = (np.abs(fx) < R) & (np.abs(fy) < R)
         bajo = cerca & (h < -self.caida_min)
