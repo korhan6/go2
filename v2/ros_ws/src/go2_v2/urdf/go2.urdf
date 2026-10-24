@@ -1,7 +1,5 @@
 <?xml version="1.0"?>
-<!-- Unitree Go2 para RViz. Geometria y mallas: unitreerobotics/unitree_ros, robots/go2_description
-     (licencia BSD-3, Unitree Robotics). Mallas reducidas a STL (go2_nav/meshes) y sin inercias:
-     solo para VER el perro en RViz (las patas se mueven con /joint_states del go2_driver). -->
+<!-- Unitree Go2 para RViz (mallas de unitreerobotics/unitree_ros, BSD-3). SIN "dos puntos y espacio" en este archivo -- el launch XML de Humble lo lee como YAML y se rompe -->
 <robot name="go2">
   <material name="cuerpo"><color rgba="0.78 0.79 0.82 1"/></material>
   <material name="pata"><color rgba="0.62 0.64 0.68 1"/></material>
