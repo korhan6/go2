@@ -69,12 +69,12 @@
     <include file="$(find-pkg-share graph_decoder)/launch/decoder.launch" />
     <!-- RViz de FAR: botones Goalpoint, Reset Visibility Graph, etc. -->
     <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="far_rviz" if="$(var rviz)"
-          args="-d $(find-pkg-share far_planner)/rviz/default.rviz" />
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_rutas.rviz" />
   </group>
 
   <group unless="$(var ruta)">
     <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="rvizGA" if="$(var rviz)"
-          args="-d $(find-pkg-share vehicle_simulator)/rviz/vehicle_simulator.rviz"/>
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_local.rviz"/>
   </group>
 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
@@ -84,5 +84,15 @@
   <node pkg="go2_v2" exec="guardian" name="go2_guardian" output="screen" respawn="true" respawn_delay="1.0">
     <param from="$(find-pkg-share go2_v2)/config/guardian.yaml" />
   </node>
+
+
+  <!-- el modelo 3D del Go2 en RViz: urdf + angulos reales de las patas, pegado al marco 'vehicle'
+       de CMU (centro del cuerpo; base_link esta 1 cm mas adelante: el L1 va a 0.289 m y CMU usa 0.3) -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="go2_robot_state" output="log">
+    <param name="robot_description" value="$(command 'cat $(find-pkg-share go2_v2)/urdf/go2.urdf')" />
+  </node>
+  <node pkg="go2_v2" exec="modelo" name="go2_modelo" output="log" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_vehicle_a_base"
+        args="0.01055 0 0 0 0 0 /vehicle /base_link"/>
 
 </launch>

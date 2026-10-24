@@ -11,6 +11,9 @@ setup(
         ("share/go2_v2", ["package.xml"]),
         ("share/go2_v2/launch", glob("launch/*")),
         ("share/go2_v2/config", glob("config/*")),
+        ("share/go2_v2/rviz", glob("rviz/*")),
+        ("share/go2_v2/urdf", glob("urdf/*")),
+        ("share/go2_v2/meshes", glob("meshes/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -22,5 +25,6 @@ setup(
         "sensores = go2_v2.sensores:main",
         "guardian = go2_v2.guardian:main",
         "herramientas = go2_v2.herramientas:main",
+        "modelo = go2_v2.modelo:main",
     ]},
 )

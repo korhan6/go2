@@ -117,9 +117,10 @@ def instalar_ros_falso():
     q.QoSProfile = lambda **kw: kw
     q.HistoryPolicy = types.SimpleNamespace(KEEP_LAST=1)
     q.ReliabilityPolicy = types.SimpleNamespace(BEST_EFFORT=2, RELIABLE=1)
+    q.qos_profile_sensor_data = {}
     m["rclpy.callback_groups"].MutuallyExclusiveCallbackGroup = object
     m["rclpy.executors"].MultiThreadedExecutor = object
-    for mod, tipos in (("sensor_msgs.msg", ("Imu", "PointCloud2", "PointField", "Joy")),
+    for mod, tipos in (("sensor_msgs.msg", ("Imu", "PointCloud2", "PointField", "Joy", "JointState")),
                        ("std_msgs.msg", ("String", "Int8")), ("std_srvs.srv", ("Trigger",)),
                        ("geometry_msgs.msg", ("TwistStamped", "PointStamped")),
                        ("nav_msgs.msg", ("Odometry",)), ("unitree_api.msg", ("Request", "Response"))):
@@ -335,8 +336,27 @@ def probar_herramientas(tmp):
     print("herramientas: guardar / ir NOMBRE / ir X Y / parar / borrar")
 
 
+def probar_modelo():
+    from go2_v2 import modelo as M
+    M.time.monotonic = mono
+    Mono.t = 50.0
+    n = M.Modelo()
+    pub = n.pubs["/joint_states"].salida
+    for _, cb in n.timers:
+        cb()
+    assert pub and pub[-1].position == M.DE_PIE and len(pub[-1].name) == 12   # sin perro: de pie
+    # con el perro (si unitree_go existe se suscribe; aca se simula el callback)
+    low = Msg()
+    low.motor_state = [Msg(q=0.1 * (i + 1)) for i in range(20)]
+    Mono.t += 0.1
+    n.cb_low(low)
+    assert abs(pub[-1].position[11] - 1.2) < 1e-9
+    print("modelo: de pie sin datos, angulos reales con /lf/lowstate")
+
+
 if __name__ == "__main__":
     import tempfile
+    probar_modelo()
     probar_sensores()
     probar_guardian()
     with tempfile.TemporaryDirectory() as d:
